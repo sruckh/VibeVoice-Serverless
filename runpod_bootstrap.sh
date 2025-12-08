@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- Diagnostics ---
+echo "=== Mount Diagnostics ==="
+df -Th
+echo "--- Root Listing ---"
+ls -l /
+echo "--- Volume Check ---"
+if [ -d "/runpod-volume" ]; then
+    echo "/runpod-volume exists:"
+    ls -ld /runpod-volume
+    ls -l /runpod-volume
+else
+    echo "/runpod-volume does NOT exist."
+fi
+echo "======================="
+
 # Detect Persistent Volume
 if [ -d "/runpod-volume" ]; then
     # Use subdirectory as requested
