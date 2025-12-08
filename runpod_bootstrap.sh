@@ -6,7 +6,7 @@ set -e
 WORKSPACE_DIR="/workspace/VibeVoice"
 VENV_DIR="/workspace/venv"
 SETUP_COMPLETE_MARKER="$WORKSPACE_DIR/.setup_complete"
-VIBEVOICE_REPO="https://github.com/microsoft/VibeVoice.git"
+VIBEVOICE_REPO="https://github.com/sruckh/VibeVoice.git"
 
 echo "Starting RunPod Bootstrap Script..."
 
@@ -75,14 +75,18 @@ else
     pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
     echo "sage_attn installed."
 
-    # Clone Repository
+    # Clone Repository (Handle non-empty directory)
     echo "Cloning VibeVoice repository..."
-    # Check if dir exists and is not empty
     if [ ! -d ".git" ]; then
-        git clone "$VIBEVOICE_REPO" .
-        echo "VibeVoice repository cloned."
+        git init
+        git remote add origin "$VIBEVOICE_REPO"
+        git fetch origin
+        git reset --hard origin/main
+        echo "VibeVoice repository cloned (via init/fetch/reset)."
     else
-        echo "VibeVoice repository already exists."
+        echo "VibeVoice repository already initialized."
+        git fetch origin
+        git reset --hard origin/main
     fi
 
     # Modify pyproject.toml (remove torch, torchvision, torchaudio)
