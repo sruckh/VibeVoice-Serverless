@@ -6,19 +6,57 @@ set -e
 WORKSPACE_DIR="/workspace/VibeVoice"
 VENV_DIR="/workspace/venv"
 SETUP_COMPLETE_MARKER="$WORKSPACE_DIR/.setup_complete"
-VIBEVOICE_REPO="https://github.com/sruckh/VibeVoice.git"
+#!/bin/bash
+
+# Exit immediately if a command exits with a non-zero status.
+set -e
 
 echo "Starting RunPod Bootstrap Script..."
 
+# --- Configuration & Mount Point Detection ---
+# RunPod Serverless mounts network volumes at /runpod-volume
+# We MUST contain everything within a 'VibeVoice' subdirectory as the volume is shared.
+if [ -d "/runpod-volume" ]; then
+    echo "Detected RunPod Network Volume at /runpod-volume. Using for persistence."
+    BASE_MOUNT="/runpod-volume"
+else
+    echo "No Network Volume detected. Falling back to /workspace (ephemeral)."
+    BASE_MOUNT="/workspace"
+fi
+
+# Define Persistent Paths (All under VibeVoice subdirectory)
+PROJECT_DIR="$BASE_MOUNT/VibeVoice"
+VENV_DIR="$PROJECT_DIR/venv"
+SETUP_COMPLETE_MARKER="$PROJECT_DIR/.setup_complete"
+VIBEVOICE_REPO="https://github.com/sruckh/VibeVoice.git"
+
+# Override Cache Paths to ensure models persist within the project folder
+export HF_HOME="$PROJECT_DIR/cache"
+export HUGGINGFACE_HUB_CACHE="$PROJECT_DIR/cache"
+echo "Persistence Root: $PROJECT_DIR"
+echo "HF_HOME set to $HF_HOME"
+
+# Create Project Directory immediately
+mkdir -p "$PROJECT_DIR"
+
+# Create Symlink for convenience (if we are on persistent volume)
+if [ "$BASE_MOUNT" == "/runpod-volume" ]; then
+    echo "Creating symlink /workspace/VibeVoice -> $PROJECT_DIR"
+    # Ensure parent exists
+    mkdir -p /workspace
+    # Force link creation
+    ln -sfn "$PROJECT_DIR" /workspace/VibeVoice
+fi
+
 # --- 0. Virtual Environment Setup (Persistent) ---
 if [ ! -d "$VENV_DIR" ]; then
-    echo "Creating virtual environment in $VENV_DIR..."
+    echo "Creating persistent virtual environment in $VENV_DIR..."
     python3 -m venv "$VENV_DIR"
 fi
 
 # Activate Venv
 source "$VENV_DIR/bin/activate"
-echo "Virtual environment activated."
+echo "Virtual environment activated from $VENV_DIR."
 
 # --- 1. S3 Cleanup (Storage Management) ---
 # Only runs if boto3 is installed (which happens in step 2 if missing)
@@ -61,9 +99,7 @@ if [ -f "$SETUP_COMPLETE_MARKER" ]; then
 else
     echo "First-run setup detected. Proceeding with installation..."
 
-    # Create workspace directory if it doesn't exist
-    mkdir -p "$WORKSPACE_DIR"
-    cd "$WORKSPACE_DIR"
+    cd "$PROJECT_DIR"
 
     # Install PyTorch
     echo "Installing PyTorch..."
@@ -76,7 +112,7 @@ else
     echo "sage_attn installed."
 
     # Clone Repository (Handle non-empty directory)
-    echo "Cloning VibeVoice repository..."
+    echo "Cloning VibeVoice repository to $PROJECT_DIR..."
     if [ ! -d ".git" ]; then
         git init
         git remote add origin "$VIBEVOICE_REPO"
@@ -110,6 +146,6 @@ else
 fi
 
 # --- 3. Launch Handler ---
-cd "$WORKSPACE_DIR" # Ensure we are in the project root
-echo "Launching RunPod handler..."
+cd "$PROJECT_DIR" # Ensure we are in the persistent project root
+echo "Launching RunPod handler from $PROJECT_DIR..."
 exec python handler.py
