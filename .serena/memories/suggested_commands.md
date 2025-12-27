@@ -1,75 +1,269 @@
-# Suggested Commands for VibeVoice Development
+# Suggested Commands
 
-This document outlines key commands for setting up, running, and developing within the VibeVoice project.
+## Development Commands
 
-## 1. Project Setup and Dependencies
-
-### Install Python Dependencies
-The project uses `setuptools` for packaging and `pyproject.toml` to manage dependencies.
-To install all required libraries:
+### Docker Build
 ```bash
-pip install .
-```
-Or, if you prefer to install in editable mode for development:
-```bash
-pip install -e .
+# Build the container image
+docker build -t vibevoice-runpod .
+
+# Note: Local testing is limited without RunPod environment and GPU
 ```
 
-## 2. Running Demos
-
-### 2.1. Real-time Streaming Web Demo (FastAPI/Uvicorn)
-
-The primary real-time demo is a web application accessible via a browser.
-
-**Required Environment Variables:**
-*   `MODEL_PATH`: Path to the VibeVoice model (e.g., a directory containing `config.json` and model weights). This is crucial.
-*   `MODEL_DEVICE`: (Optional) Specifies the device for model inference (`cuda`, `cpu`, `mpx`, `mps`). Defaults to `cuda`.
-*   `VOICE_PRESET`: (Optional) Specifies a default voice preset to use.
-
-**To run the web demo:**
-Navigate to the project root and execute the wrapper script:
+### File Operations
 ```bash
-python demo/vibevoice_realtime_demo.py --model_path /path/to/your/model --port 8000 --device cuda
-```
-Replace `/path/to/your/model` with the actual path to your VibeVoice model.
-Access the demo in your browser at `http://localhost:8000` (or your specified port).
+# List files (standard Linux)
+ls -la
 
-**Example without the wrapper script (if environment variables are set directly):**
-```bash
-export MODEL_PATH="/path/to/your/model"
-export MODEL_DEVICE="cuda"
-uvicorn demo.web.app:app --host 0.0.0.0 --port 8000 --reload
+# Find files by pattern
+find . -name "*.py"
+
+# Search in files
+grep -r "pattern" .
+
+# Change directory
+cd /path/to/directory
+
+# View file contents
+cat filename.py
+
+# Edit files (use your preferred editor)
+vim filename.py
+nano filename.py
 ```
 
-### 2.2. Colab Notebook Demo
-A Colab notebook is provided for interactive demonstration.
-*   **Access:** `demo/vibevoice_realtime_colab.ipynb`
-*   **Direct Link (from README):** `https://colab.research.google.com/github/microsoft/VibeVoice/blob/main/demo/vibevoice_realtime_colab.ipynb`
+### Git Commands
+```bash
+# Check status
+git status
 
-## 3. Code Quality and Maintenance (Suggested)
+# Stage changes
+git add .
 
-While no explicit configurations were found, it is recommended to use the following tools for code quality:
+# Commit changes
+git commit -m "Description of changes"
 
-*   **Formatting**:
-    *   `black .`: Automatically formats Python code.
-    *   `isort .`: Sorts and formats Python imports.
-*   **Linting**:
-    *   `flake8 .`: Checks for style guide violations and programming errors.
+# Push to remote
+git push origin main
 
-## 4. General System Commands
+# View commit history
+git log --oneline
 
-*   `git status`: Check the status of your Git repository.
-*   `git add .`: Stage all changes for commit.
-*   `git commit -m "Your commit message"`: Commit staged changes.
-*   `ls -F`: List files and directories in the current directory.
-*   `cd <directory>`: Change directory.
-*   `grep -r "pattern" .`: Search for a pattern recursively in the current directory.
-*   `find . -name "*.py"`: Find Python files in the current directory.
+# View diff
+git diff
+```
 
-## 5. What to do when a task is completed
+## Deployment Commands
 
-After making changes or implementing a new feature, follow these steps:
-1.  Run all relevant formatting and linting checks (e.g., `black`, `isort`, `flake8`).
-2.  Ensure all demos or entry points still function as expected.
-3.  If new functionality is added, consider adding unit tests if a testing framework is introduced.
-4.  Commit your changes with a clear and concise message.
+### RunPod Deployment
+**Note:** Deployment happens via RunPod web interface, not CLI
+
+1. Push code to GitHub repository
+2. Create RunPod Serverless Endpoint via web UI:
+   - Container Image: Select "From GitHub"
+   - Repository: Your GitHub repo URL
+   - Branch: `main`
+   - Attach Network Volume
+   - Set Environment Variables (see below)
+
+### Environment Variables (Set in RunPod UI)
+
+**Required:**
+```bash
+HF_TOKEN=your_huggingface_token_here
+```
+
+**Optional (S3):**
+```bash
+S3_ENDPOINT_URL=https://s3.amazonaws.com
+S3_ACCESS_KEY_ID=your_access_key
+S3_SECRET_ACCESS_KEY=your_secret_key
+S3_BUCKET_NAME=your_bucket_name
+S3_REGION=us-east-1
+```
+
+**Optional (Tuning):**
+```bash
+MAX_TEXT_LENGTH=2000
+DEFAULT_SAMPLE_RATE=24000
+MAX_CHUNK_CHARS=300
+DEFAULT_SPEAKER=Alice
+DEFAULT_CFG_SCALE=1.3
+```
+
+## Testing Commands
+
+### Manual API Testing
+```bash
+# Test the deployed RunPod endpoint
+curl -X POST https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync \
+  -H "Authorization: Bearer {RUNPOD_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "text": "Hello! This is a test of VibeVoice TTS system.",
+      "speaker_name": "Alice",
+      "cfg_scale": 1.3,
+      "disable_prefill": false
+    }
+  }'
+```
+
+### Voice File Upload (via RunPod Volume SSH/SFTP)
+```bash
+# Connect to network volume and upload voice files
+# (Exact method depends on RunPod volume access configuration)
+
+# Voice files must be .wav format in:
+/runpod-volume/vibevoice/demo/voices/Alice.wav
+/runpod-volume/vibevoice/demo/voices/Carter.wav
+# etc.
+```
+
+## Cloudflare Worker Bridge Deployment (Optional)
+
+### Setup
+```bash
+# Install Wrangler CLI
+npm install -g wrangler
+
+# Deploy worker
+cd bridge
+wrangler deploy
+
+# Set secrets
+wrangler secret put RUNPOD_URL
+wrangler secret put RUNPOD_API_KEY
+wrangler secret put AUTH_TOKEN
+
+# Upload voice mapping to R2
+wrangler r2 object put VIBEVOICE_BUCKET/voices.json --file=voices.json
+```
+
+### Test Bridge
+```bash
+# Test OpenAI-compatible endpoint
+curl -X POST https://your-worker.workers.dev/v1/audio/speech \
+  -H "Authorization: Bearer {AUTH_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tts-1",
+    "input": "Hello! This is a test.",
+    "voice": "alloy"
+  }' \
+  --output test_audio.mp3
+```
+
+## Debugging Commands
+
+### View Container Logs (RunPod UI)
+- Navigate to your endpoint in RunPod dashboard
+- Click on "Logs" tab to view bootstrap and handler output
+
+### Check Network Volume
+```bash
+# If you have SSH access to RunPod volume
+ls -la /runpod-volume/vibevoice/
+
+# Check first run flag
+ls -la /runpod-volume/vibevoice/.first_run_complete
+
+# Check voice files
+ls -la /runpod-volume/vibevoice/demo/voices/
+
+# Check cached model
+ls -la /runpod-volume/vibevoice/hf_cache/
+
+# Check generated outputs
+ls -la /runpod-volume/vibevoice/output/
+```
+
+### Python Debugging
+```bash
+# Check Python version in container
+python --version
+
+# Check installed packages
+pip list
+
+# Check PyTorch CUDA availability
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+
+# Check HuggingFace cache
+python -c "import os; print(os.environ.get('HF_HUB_CACHE'))"
+```
+
+## Maintenance Commands
+
+### Clean Up Old Output Files
+**Note:** Automatic cleanup happens in handler.py (files older than 2 days)
+
+Manual cleanup via SSH/SFTP:
+```bash
+# Remove old output files
+find /runpod-volume/vibevoice/output -type f -mtime +2 -delete
+```
+
+### Reset First Run Flag (Force Re-setup)
+```bash
+# Remove first run flag to trigger full bootstrap on next start
+rm /runpod-volume/vibevoice/.first_run_complete
+```
+
+### Clear Model Cache (Force Re-download)
+```bash
+# Clear HuggingFace cache
+rm -rf /runpod-volume/vibevoice/hf_cache/*
+```
+
+## Code Quality Commands
+
+**Note:** This project doesn't currently have linting/formatting configured.
+Future additions could include:
+
+```bash
+# Format with black (if added)
+black handler.py inference.py config.py
+
+# Lint with flake8 (if added)
+flake8 handler.py inference.py config.py
+
+# Type check with mypy (if added)
+mypy handler.py inference.py config.py
+
+# Run tests (if added)
+pytest tests/
+```
+
+## Important Notes
+
+### What NOT to Do
+❌ Don't run `pip install` locally (dependencies are for container environment)
+❌ Don't test GPU code without GPU (will fail or fall back to CPU)
+❌ Don't modify files in `chatterbox/` or `VibeVoice/` (reference only)
+❌ Don't commit large model files or voice files to git
+❌ Don't hardcode API keys or tokens in code
+
+### System-Specific Notes
+- **Linux System**: Standard Unix commands work (ls, grep, find, cd)
+- **Python 3.12**: Use f-strings, type hints, modern Python features
+- **No Direct Container Execution**: Container runs on RunPod, not locally
+- **GPU Required**: Model needs CUDA-capable GPU to run efficiently
+
+## Quick Reference
+
+### When Task is Completed
+1. Review changes with `git diff`
+2. Commit changes with `git commit -m "Description"`
+3. Push to GitHub with `git push origin main`
+4. RunPod auto-rebuilds from GitHub
+5. Test deployed endpoint with curl command
+
+### First Deployment Checklist
+- [ ] Set `HF_TOKEN` environment variable in RunPod
+- [ ] Attach network volume to endpoint
+- [ ] Wait 5-10 minutes for first run (model download)
+- [ ] Upload voice files to `/runpod-volume/vibevoice/demo/voices/`
+- [ ] Test with sample text via API
+- [ ] Verify audio output quality
+- [ ] Check logs for any errors

@@ -4,22 +4,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     PYTHONUNBUFFERED=1 \
-    HF_HOME=/workspace/VibeVoice/cache \
-    HUGGINGFACE_HUB_CACHE=/workspace/VibeVoice/cache \
-    WORKSPACE=/workspace/VibeVoice
+    HF_HOME=/runpod-volume/vibevoice/hf_home \
+    HF_HUB_CACHE=/runpod-volume/vibevoice/hf_cache
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 python3.12-venv python3.12-dev python3-pip \
-    git ca-certificates curl build-essential cmake ninja-build pkg-config ffmpeg \
+    git ca-certificates curl build-essential ffmpeg libsndfile1 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && ln -sf /usr/bin/pip3 /usr/local/bin/pip
 
-WORKDIR /workspace/VibeVoice
+WORKDIR /workspace/vibevoice
 
-# At this point, only the bootstrap script will be copied into the container.
-# The VibeVoice repository will be cloned by the bootstrap script at runtime.
-COPY runpod_bootstrap.sh /workspace/VibeVoice/runpod_bootstrap.sh
+COPY requirements.txt /workspace/vibevoice/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-CMD ["bash", "/workspace/VibeVoice/runpod_bootstrap.sh"]
+COPY bootstrap.sh /workspace/vibevoice/bootstrap.sh
+COPY handler.py /workspace/vibevoice/handler.py
+COPY inference.py /workspace/vibevoice/inference.py
+COPY config.py /workspace/vibevoice/config.py
 
+CMD ["bash", "/workspace/vibevoice/bootstrap.sh"]

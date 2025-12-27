@@ -1,0 +1,82 @@
+#!/bin/bash
+set -e
+
+echo "=== VibeVoice Runpod Serverless Bootstrap ==="
+
+# Create vibevoice directory structure on network volume
+echo "Creating directory structure on network volume..."
+mkdir -p /runpod-volume/vibevoice/{hf_home,hf_cache,models,output,demo/voices}
+
+# Set environment variables for HuggingFace cache
+export HF_HOME="/runpod-volume/vibevoice/hf_home"
+export HF_HUB_CACHE="/runpod-volume/vibevoice/hf_cache"
+
+# Export HF_TOKEN if available
+if [ -n "$HF_TOKEN" ]; then
+    export HF_TOKEN="$HF_TOKEN"
+    echo "HuggingFace token configured"
+else
+    echo "WARNING: HF_TOKEN not set. Model download may fail if model requires authentication."
+fi
+
+# Virtual Environment Path on Network Volume
+VENV_PATH="/runpod-volume/vibevoice/venv"
+
+# Check if this is first run
+FIRST_RUN_FLAG="/runpod-volume/vibevoice/.first_run_complete"
+
+if [ ! -f "$FIRST_RUN_FLAG" ]; then
+    echo "=== First Run Detected - Setting up Environment ==="
+
+    # Create Virtual Environment
+    echo "Creating virtual environment at $VENV_PATH..."
+    python3 -m venv "$VENV_PATH"
+    
+    # Activate Virtual Environment
+    source "$VENV_PATH/bin/activate"
+
+    # Install PyTorch with CUDA 12.8 support
+    echo "Installing PyTorch..."
+    pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 \
+        --index-url https://download.pytorch.org/whl/cu128
+
+    # Install huggingface_hub and other dependencies
+    echo "Installing additional dependencies..."
+    pip install huggingface_hub runpod>=1.6.0 boto3>=1.26.0 toml soundfile>=0.12.1
+
+    # Clone VibeVoice repository
+    echo "Cloning VibeVoice repository..."
+    cd /runpod-volume/vibevoice
+    rm -rf vibevoice
+    git clone https://github.com/vibevoice-community/VibeVoice.git vibevoice
+
+    # Install VibeVoice
+    echo "Installing VibeVoice..."
+    cd /runpod-volume/vibevoice/vibevoice
+    pip install -e .
+
+    # Pre-download model during first run
+    echo "Pre-downloading VibeVoice-7B model..."
+    python3 -c "
+from huggingface_hub import snapshot_download
+import os
+
+cache_dir = os.environ.get('HF_HUB_CACHE', '/runpod-volume/vibevoice/hf_cache')
+print(f'Downloading model to {cache_dir}...')
+snapshot_download('vibevoice/VibeVoice-7B', cache_dir=cache_dir)
+print('Model download complete')
+"
+
+    # Create first run flag
+    touch "$FIRST_RUN_FLAG"
+    echo "=== First Run Setup Complete ==="
+
+else
+    echo "=== Existing Installation Found - Skipping Setup ==="
+    # Activate Virtual Environment
+    source "$VENV_PATH/bin/activate"
+fi
+
+# Start handler
+echo "Starting VibeVoice handler..."
+exec python /workspace/vibevoice/handler.py

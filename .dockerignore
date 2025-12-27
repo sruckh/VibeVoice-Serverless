@@ -1,0 +1,7 @@
+chatterbox/
+VibeVoice/
+*.md
+plans/
+.git/
+.gitignore
+.serena/

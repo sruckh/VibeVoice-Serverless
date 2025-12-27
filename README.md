@@ -1,117 +1,482 @@
-<div align="center">
+# VibeVoice RunPod Serverless
 
-## 🎙️ VibeVoice: Open-Source Frontier Voice AI
-[![Project Page](https://img.shields.io/badge/Project-Page-blue?logo=microsoft)](https://microsoft.github.io/VibeVoice)
-[![Hugging Face](https://img.shields.io/badge/HuggingFace-Collection-orange?logo=huggingface)](https://huggingface.co/collections/microsoft/vibevoice-68a2ef24a875c44be47b034f)
-[![Technical Report](https://img.shields.io/badge/Technical-Report-red?logo=adobeacrobatreader)](https://arxiv.org/pdf/2508.19205)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch 2.8.0](https://img.shields.io/badge/PyTorch-2.8.0-EE4C2C.svg)](https://pytorch.org/)
+[![CUDA 12.8](https://img.shields.io/badge/CUDA-12.8-76B900.svg)](https://developer.nvidia.com/cuda-toolkit)
+[![RunPod](https://img.shields.io/badge/RunPod-Serverless-blueviolet)](https://www.runpod.io/)
 
+> Production-ready RunPod serverless deployment of VibeVoice 7B text-to-speech model with voice cloning capabilities.
 
-</div>
+Transform text into natural-sounding speech with custom voice cloning. Deploy as a scalable serverless API on RunPod infrastructure with GPU acceleration, optional S3 storage, and OpenAI TTS API compatibility.
 
+## ✨ Features
 
-<div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="Figures/VibeVoice_logo_white.png">
-  <img src="Figures/VibeVoice_logo.png" alt="VibeVoice Logo" width="300">
-</picture>
-</div>
+- **🎙️ Voice Cloning** - Clone any voice using reference audio samples (.wav format)
+- **🤖 VibeVoice 7B Model** - State-of-the-art text-to-speech with natural prosody
+- **⚡ Smart Text Chunking** - Automatically split long texts at natural boundaries (sentences, clauses)
+- **🔊 Loudness Normalization** - Consistent audio output normalized to -20 LUFS
+- **☁️ S3 Integration** - Optional S3 storage with presigned URLs, fallback to base64
+- **🔌 OpenAI API Compatible** - Optional Cloudflare Worker bridge for drop-in OpenAI TTS replacement
+- **🚀 Serverless Architecture** - Auto-scaling, pay-per-use deployment on RunPod
+- **💾 Persistent Caching** - Network volume for models, voice files, and outputs
 
-<div align="left">
+## 🏗️ Architecture
 
-<h3>📰 News</h3>
+![Architecture Diagram](./docs/diagrams/architecture.svg)
 
-<img src="https://img.shields.io/badge/Status-New-brightgreen?style=flat" alt="New" />
-<img src="https://img.shields.io/badge/Feature-Realtime_TTS-blue?style=flat&logo=soundcharts" alt="Realtime TTS" />
+The system uses a three-layer architecture:
 
-<strong>2025-12-03: 📣 We open-sourced <a href="docs/vibevoice-realtime-0.5b.md"><strong>VibeVoice‑Realtime‑0.5B</strong></a>, a real‑time text‑to‑speech model that supports streaming text input and robust long-form speech generation. Try it on [Colab](https://colab.research.google.com/github/microsoft/VibeVoice/blob/main/demo/vibevoice_realtime_colab.ipynb).</strong>
+1. **Container Layer** - CUDA-enabled Docker container with Python 3.12 and PyTorch 2.8.0
+2. **Handler Layer** - RunPod serverless entry point with request validation and S3 integration
+3. **Inference Layer** - VibeVoice model with voice cloning and smart text chunking
 
-To mitigate deepfake risks and ensure low latency for the first speech chunk, voice prompts are provided in an embedded format. For users requiring voice customization, please reach out to our team. We will also be expanding the range of available speakers.
-<br>
+All components persist on a RunPod network volume for fast subsequent startups (~30-60 seconds after first run).
 
-https://github.com/user-attachments/assets/0901d274-f6ae-46ef-a0fd-3c4fba4f76dc
+## 🚀 Quick Start
 
-> (Launch your own realtime demo via the websocket example in [Usage](docs/vibevoice-realtime-0.5b.md#usage-1-launch-real-time-websocket-demo)).
+### Prerequisites
 
-</div>
+- **RunPod Account** with GPU access ([Sign up](https://www.runpod.io/))
+- **HuggingFace Token** with access to VibeVoice-7B ([Get token](https://huggingface.co/settings/tokens))
+- **Voice Files** - At least one reference audio file in `.wav` format (3-30 seconds)
 
-2025-09-05: VibeVoice is an open-source research framework intended to advance collaboration in the speech synthesis community. After release, we discovered instances where the tool was used in ways inconsistent with the stated intent. Since responsible use of AI is one of Microsoft’s guiding principles, we have disabled this repo until we are confident that out-of-scope use is no longer possible.
+### Installation
 
+#### 1. Deploy to RunPod
 
-### Overview
+1. **Fork/Clone this repository** to your GitHub account
 
-VibeVoice is a novel framework designed for generating **expressive**, **long-form**, **multi-speaker** conversational audio, such as podcasts, from text. It addresses significant challenges in traditional Text-to-Speech (TTS) systems, particularly in scalability, speaker consistency, and natural turn-taking.
+2. **Create RunPod Serverless Endpoint**:
+   - Navigate to [RunPod Serverless](https://www.runpod.io/console/serverless)
+   - Click "New Endpoint"
+   - Select "From GitHub"
+   - Enter your repository URL
+   - Branch: `main`
 
-VibeVoice currently includes two model variants:
+3. **Attach Network Volume**:
+   - Create or attach a network volume (recommended: 50GB+)
+   - This persists models, cache, and voice files
 
-- **Long-form multi-speaker model**: Synthesizes conversational/single-speaker speech up to **90 minutes** with up to **4 distinct speakers**, surpassing the typical 1–2 speaker limits of many prior models.
-- **[Realtime streaming TTS model](docs/vibevoice-realtime-0.5b.md)**: Produces initial audible speech in ~**300 ms** and supports **streaming text input** for single-speaker **real-time** speech generation; designed for low-latency generation.
+4. **Configure Environment Variables**:
+   ```bash
+   # Required
+   HF_TOKEN=your_huggingface_token_here
 
-A core innovation of VibeVoice is its use of continuous speech tokenizers (Acoustic and Semantic) operating at an ultra-low frame rate of 7.5 Hz. These tokenizers efficiently preserve audio fidelity while significantly boosting computational efficiency for processing long sequences. VibeVoice employs a [next-token diffusion](https://arxiv.org/abs/2412.08635) framework, leveraging a Large Language Model (LLM) to understand textual context and dialogue flow, and a diffusion head to generate high-fidelity acoustic details.
+   # Optional - S3 Storage
+   S3_ENDPOINT_URL=https://s3.amazonaws.com
+   S3_ACCESS_KEY_ID=your_access_key
+   S3_SECRET_ACCESS_KEY=your_secret_key
+   S3_BUCKET_NAME=your_bucket_name
+   S3_REGION=us-east-1
 
+   # Optional - Tuning
+   MAX_TEXT_LENGTH=2000
+   DEFAULT_SAMPLE_RATE=24000
+   MAX_CHUNK_CHARS=300
+   DEFAULT_SPEAKER=Alice
+   DEFAULT_CFG_SCALE=1.3
+   ```
 
-<p align="left">
-  <img src="Figures/MOS-preference.png" alt="MOS Preference Results" height="260px">
-  <img src="Figures/VibeVoice.jpg" alt="VibeVoice Overview" height="250px" style="margin-right: 10px;">
-</p>
+5. **Upload Voice Files**:
+   - Connect to your network volume via RunPod SSH/SFTP
+   - Upload `.wav` files to `/runpod-volume/vibevoice/demo/voices/`
+   - Example: `Alice.wav`, `Carter.wav`, `Emma.wav`
 
+6. **Deploy**:
+   - Click "Deploy"
+   - First run takes **5-10 minutes** (model download + setup)
+   - Subsequent runs take **30-60 seconds** (cached)
 
-### 🎵 Demo Examples
+#### 2. Test the Endpoint
 
+```bash
+# Replace with your actual endpoint ID and API key
+curl -X POST https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync \
+  -H "Authorization: Bearer {RUNPOD_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "text": "Hello! This is a test of VibeVoice text-to-speech with voice cloning.",
+      "speaker_name": "Alice",
+      "cfg_scale": 1.3,
+      "disable_prefill": false
+    }
+  }'
+```
 
-**Video Demo**
+**Response:**
+```json
+{
+  "status": "success",
+  "sample_rate": 24000,
+  "duration_sec": 3.45,
+  "audio_url": "https://presigned-s3-url.com/audio.mp3"
+}
+```
 
-We produced this video with [Wan2.2](https://github.com/Wan-Video/Wan2.2). We sincerely appreciate the Wan-Video team for their great work.
+### Basic Usage
 
-**English**
-<div align="center">
+#### Python Example
 
-https://github.com/user-attachments/assets/0967027c-141e-4909-bec8-091558b1b784
+```python
+import requests
+import base64
 
-</div>
+ENDPOINT_URL = "https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync"
+API_KEY = "your_runpod_api_key"
 
+def generate_speech(text, speaker="Alice"):
+    response = requests.post(
+        ENDPOINT_URL,
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "input": {
+                "text": text,
+                "speaker_name": speaker,
+                "cfg_scale": 1.3
+            }
+        }
+    )
 
-**Chinese**
-<div align="center">
+    result = response.json()
 
-https://github.com/user-attachments/assets/322280b7-3093-4c67-86e3-10be4746c88f
+    # Download from S3 URL or decode base64
+    if "audio_url" in result:
+        audio_response = requests.get(result["audio_url"])
+        return audio_response.content
+    elif "audio_base64" in result:
+        return base64.b64decode(result["audio_base64"])
 
-</div>
+    raise Exception(f"Generation failed: {result}")
 
-**Cross-Lingual**
-<div align="center">
+# Generate speech
+audio_data = generate_speech(
+    "Welcome to VibeVoice! This is a demonstration of voice cloning.",
+    speaker="Alice"
+)
 
-https://github.com/user-attachments/assets/838d8ad9-a201-4dde-bb45-8cd3f59ce722
+# Save to file
+with open("output.mp3", "wb") as f:
+    f.write(audio_data)
+```
 
-</div>
+#### JavaScript Example
 
-**Spontaneous Singing**
-<div align="center">
+```javascript
+const ENDPOINT_URL = "https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync";
+const API_KEY = "your_runpod_api_key";
 
-https://github.com/user-attachments/assets/6f27a8a5-0c60-4f57-87f3-7dea2e11c730
+async function generateSpeech(text, speaker = "Alice") {
+  const response = await fetch(ENDPOINT_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      input: {
+        text: text,
+        speaker_name: speaker,
+        cfg_scale: 1.3
+      }
+    })
+  });
 
-</div>
+  const result = await response.json();
 
+  // Return S3 URL or base64 data
+  if (result.audio_url) {
+    return result.audio_url;
+  } else if (result.audio_base64) {
+    return `data:audio/mpeg;base64,${result.audio_base64}`;
+  }
 
-**Long Conversation with 4 people**
-<div align="center">
+  throw new Error(`Generation failed: ${JSON.stringify(result)}`);
+}
 
-https://github.com/user-attachments/assets/a357c4b6-9768-495c-a576-1618f6275727
+// Usage
+generateSpeech("Hello from VibeVoice!", "Alice")
+  .then(audioUrl => console.log("Audio URL:", audioUrl))
+  .catch(error => console.error("Error:", error));
+```
 
-</div>
+## 📖 Documentation
 
-For more examples, see the [Project Page](https://microsoft.github.io/VibeVoice).
+### API Reference
 
+#### Custom RunPod API
 
+**Endpoint:** `POST https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync`
 
-## Risks and limitations
+**Headers:**
+```
+Authorization: Bearer {RUNPOD_API_KEY}
+Content-Type: application/json
+```
 
-While efforts have been made to optimize it through various techniques, it may still produce outputs that are unexpected, biased, or inaccurate. VibeVoice inherits any biases, errors, or omissions produced by its base model (specifically, Qwen2.5 1.5b in this release).
-Potential for Deepfakes and Disinformation: High-quality synthetic speech can be misused to create convincing fake audio content for impersonation, fraud, or spreading disinformation. Users must ensure transcripts are reliable, check content accuracy, and avoid using generated content in misleading ways. Users are expected to use the generated content and to deploy the models in a lawful manner, in full compliance with all applicable laws and regulations in the relevant jurisdictions. It is best practice to disclose the use of AI when sharing AI-generated content.
+**Request Body:**
+```json
+{
+  "input": {
+    "text": "Text to synthesize",
+    "speaker_name": "Alice",
+    "cfg_scale": 1.3,
+    "disable_prefill": false
+  }
+}
+```
 
-English and Chinese only: Transcripts in languages other than English or Chinese may result in unexpected audio outputs.
+**Parameters:**
 
-Non-Speech Audio: The model focuses solely on speech synthesis and does not handle background noise, music, or other sound effects.
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `text` | string | Yes | - | Text to synthesize (max 2000 chars) |
+| `speaker_name` | string | No | `"Alice"` | Speaker name matching voice file in `demo/voices/` |
+| `cfg_scale` | float | No | `1.3` | Classifier-free guidance scale (higher = more expressive) |
+| `disable_prefill` | bool | No | `false` | Disable voice cloning (use base model voice) |
 
-Overlapping Speech: The current model does not explicitly model or generate overlapping speech segments in conversations.
+**Response:**
+```json
+{
+  "status": "success",
+  "sample_rate": 24000,
+  "duration_sec": 3.45,
+  "audio_url": "https://presigned-s3-url.com/audio.mp3"
+}
+```
 
-We do not recommend using VibeVoice in commercial or real-world applications without further testing and development. This model is intended for research and development purposes only. Please use responsibly.
+Or without S3:
+```json
+{
+  "status": "success",
+  "sample_rate": 24000,
+  "duration_sec": 3.45,
+  "audio_base64": "base64-encoded-audio-data"
+}
+```
+
+#### OpenAI TTS API (via Cloudflare Worker)
+
+For OpenAI API compatibility, deploy the optional Cloudflare Worker bridge:
+
+**Endpoint:** `POST https://your-worker.workers.dev/v1/audio/speech`
+
+**Request:**
+```json
+{
+  "model": "tts-1",
+  "input": "Hello! This is a test.",
+  "voice": "alloy"
+}
+```
+
+**Voice Mappings:**
+- `alloy` → Alice
+- `echo` → Carter
+- `fable` → Frank
+- `onyx` → Mary
+- `nova` → Maya
+- `shimmer` → Samuel
+
+See [`bridge/README.md`](bridge/README.md) for deployment instructions.
+
+### Configuration
+
+Environment variables for tuning:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `HF_TOKEN` | HuggingFace authentication token | **Required** |
+| `S3_ENDPOINT_URL` | S3-compatible endpoint URL | None |
+| `S3_ACCESS_KEY_ID` | S3 access key ID | None |
+| `S3_SECRET_ACCESS_KEY` | S3 secret access key | None |
+| `S3_BUCKET_NAME` | S3 bucket name | None |
+| `S3_REGION` | S3 region | `us-east-1` |
+| `MAX_TEXT_LENGTH` | Maximum text length | `2000` |
+| `DEFAULT_SAMPLE_RATE` | Audio sample rate (Hz) | `24000` |
+| `MAX_CHUNK_CHARS` | Maximum characters per chunk | `300` |
+| `DEFAULT_SPEAKER` | Default voice name | `Alice` |
+| `DEFAULT_CFG_SCALE` | Default CFG scale | `1.3` |
+
+### Voice Files
+
+Voice cloning requires reference audio in `.wav` format:
+
+- **Location:** `/runpod-volume/vibevoice/demo/voices/`
+- **Format:** `.wav` (PCM audio)
+- **Duration:** 3-30 seconds recommended
+- **Quality:** Clear, single speaker, minimal background noise
+- **Naming:** Use descriptive names (e.g., `Alice.wav`, `Morgan_Freeman.wav`)
+
+**Example directory:**
+```
+/runpod-volume/vibevoice/demo/voices/
+├── Alice.wav
+├── Carter.wav
+├── Emma.wav
+├── Frank.wav
+└── Morgan_Freeman.wav
+```
+
+## 🔧 Development
+
+### Local Development
+
+**Note:** Full local testing requires GPU. The following is for code development only.
+
+```bash
+# Clone repository
+git clone https://github.com/your-username/vibevoice-runpod-serverless.git
+cd vibevoice-runpod-serverless
+
+# Build Docker image
+docker build -t vibevoice-runpod .
+
+# Run container (requires GPU and network volume mount)
+docker run --gpus all \
+  -v /path/to/volume:/runpod-volume \
+  -e HF_TOKEN=your_token \
+  vibevoice-runpod
+```
+
+### Project Structure
+
+```
+vibevoice-runpod-serverless/
+├── Dockerfile                 # Container definition
+├── requirements.txt           # Python dependencies
+├── bootstrap.sh              # Runtime setup script
+├── handler.py                # RunPod serverless entry point
+├── inference.py              # VibeVoice inference engine
+├── config.py                 # Configuration management
+├── bridge/                   # Optional Cloudflare Worker
+│   ├── worker.js            # OpenAI TTS API bridge
+│   ├── wrangler.toml.example
+│   └── voices.json          # Voice name mappings
+└── docs/
+    └── diagrams/            # Architecture diagrams
+```
+
+### Key Components
+
+- **`handler.py`** - RunPod serverless handler with S3 upload, loudness normalization
+- **`inference.py`** - VibeVoice model loading, voice cloning, smart text chunking
+- **`config.py`** - Environment variable configuration
+- **`bootstrap.sh`** - First-run setup (venv, model download, dependencies)
+
+## 🧪 Testing
+
+### Manual Testing
+
+```bash
+# Test with curl
+curl -X POST https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync \
+  -H "Authorization: Bearer {RUNPOD_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "text": "Testing voice cloning with VibeVoice.",
+      "speaker_name": "Alice"
+    }
+  }' | jq .
+```
+
+### Test Cases
+
+1. **Short text generation** - Single sentence
+2. **Long text chunking** - Paragraph with multiple sentences
+3. **Voice cloning** - Custom speaker name
+4. **Error handling** - Empty text, invalid cfg_scale
+5. **S3 upload** - Verify presigned URL works
+6. **Base64 fallback** - Test without S3 credentials
+
+## 🚨 Troubleshooting
+
+### Common Issues
+
+**1. First run timeout**
+- **Symptom:** Request times out on first deployment
+- **Solution:** First run takes 5-10 minutes. Increase RunPod timeout or wait for completion.
+
+**2. Model download fails**
+- **Symptom:** Error: "Failed to download model"
+- **Solution:** Verify `HF_TOKEN` is set and has access to VibeVoice-7B model.
+
+**3. Voice file not found**
+- **Symptom:** Error: "No voice files found"
+- **Solution:** Upload at least one `.wav` file to `/runpod-volume/vibevoice/demo/voices/`
+
+**4. Flash attention error**
+- **Symptom:** Warning about flash_attention_2
+- **Solution:** System automatically falls back to sdpa. No action needed.
+
+**5. S3 upload fails**
+- **Symptom:** Audio returns as base64 instead of URL
+- **Solution:** Check S3 credentials and bucket configuration. Base64 fallback works automatically.
+
+### Debug Commands
+
+```bash
+# Check RunPod logs in dashboard
+# View "Logs" tab for your endpoint
+
+# Verify voice files exist (via SSH to network volume)
+ls -la /runpod-volume/vibevoice/demo/voices/
+
+# Check first run flag
+ls -la /runpod-volume/vibevoice/.first_run_complete
+
+# View cached model
+ls -la /runpod-volume/vibevoice/hf_cache/
+
+# Check generated outputs
+ls -la /runpod-volume/vibevoice/output/
+```
+
+## 🤝 Contributing
+
+Contributions are welcome! This project follows standard open-source contribution practices.
+
+### How to Contribute
+
+1. **Fork the repository**
+2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
+3. **Make your changes** with clear, descriptive commits
+4. **Test thoroughly** - Ensure no regressions
+5. **Push to your fork** (`git push origin feature/amazing-feature`)
+6. **Open a Pull Request** with a detailed description
+
+### Code Style
+
+- **Python:** PEP 8 with type hints, Google-style docstrings
+- **Logging:** Use appropriate levels (info, warning, error)
+- **Error Handling:** Graceful degradation with fallbacks
+- **Documentation:** Update README.md for user-facing changes
+
+## 📄 License
+
+This project is provided as-is for deployment of the VibeVoice model.
+
+- **VibeVoice Model:** See [VibeVoice repository](https://github.com/vibevoice-community/VibeVoice) for model license
+- **Deployment Code:** Open-source deployment implementation
+
+## 🙏 Acknowledgments
+
+- **VibeVoice Team** - For the excellent VibeVoice 7B model ([GitHub](https://github.com/vibevoice-community/VibeVoice))
+- **RunPod** - For serverless GPU infrastructure ([RunPod.io](https://www.runpod.io/))
+- **HuggingFace** - For model hosting and transformers library
+- **Chatterbox** - Reference implementation patterns for RunPod serverless TTS
+
+## 📚 Additional Resources
+
+- [VibeVoice Model Card](https://huggingface.co/vibevoice/VibeVoice-7B)
+- [RunPod Documentation](https://docs.runpod.io/)
+- [Implementation Guide](IMPLEMENTATION.md)
+- [Architecture Details](CLAUDE.md)
+
+---
+
+**Questions or Issues?** Open an issue on GitHub or consult the [troubleshooting section](#-troubleshooting).
