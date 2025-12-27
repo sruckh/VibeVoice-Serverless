@@ -289,10 +289,11 @@ class VibeVoiceInference:
         speaker_name = speaker_name or config.DEFAULT_SPEAKER
         voice_path = self.voice_mapper.get_voice_path(speaker_name)
 
-        # Format text with speaker annotation for VibeVoice script format
-        # VibeVoice expects format: "SpeakerName: text content"
-        formatted_text = f"{speaker_name}: {text}"
+        # Format text with VibeVoice script format
+        # VibeVoice expects "Speaker {number}: text" format, not custom names
+        formatted_text = f"Speaker 1: {text}"
         log.info(f"[DEBUG] Formatted text for processor: {formatted_text[:100]}...")
+        log.info(f"[DEBUG] Using voice file: {voice_path}")
 
         # Smart chunk text if it's too long
         chunks = self._smart_chunk_text(text, self.max_chunk_chars)
@@ -306,9 +307,10 @@ class VibeVoiceInference:
                     f.write(formatted_text)
 
                 with torch.no_grad():
+                    # voice_samples must be a list of lists: [[path1, path2, ...]]
                     inputs = self.processor(
                         text=[formatted_text],
-                        voice_samples=[voice_path],
+                        voice_samples=[[voice_path]],  # List of lists!
                         padding=True,
                         return_tensors="pt",
                         return_attention_mask=True,
@@ -346,8 +348,8 @@ class VibeVoiceInference:
             for i, chunk_text in enumerate(chunks, 1):
                 log.info(f"Generating chunk {i}/{len(chunks)} ({len(chunk_text)} chars)...")
 
-                # Format each chunk with speaker annotation
-                formatted_chunk = f"{speaker_name}: {chunk_text}"
+                # Format each chunk with VibeVoice script format
+                formatted_chunk = f"Speaker 1: {chunk_text}"
 
                 temp_txt_path = None
                 try:
@@ -356,9 +358,10 @@ class VibeVoiceInference:
                         f.write(formatted_chunk)
 
                     with torch.no_grad():
+                        # voice_samples must be a list of lists
                         inputs = self.processor(
                             text=[formatted_chunk],
-                            voice_samples=[voice_path],
+                            voice_samples=[[voice_path]],  # List of lists!
                             padding=True,
                             return_tensors="pt",
                             return_attention_mask=True,

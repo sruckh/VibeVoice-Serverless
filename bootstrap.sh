@@ -81,15 +81,6 @@ else
     source "$VENV_PATH/bin/activate"
 fi
 
-# One-time flash-attention installation (runs even if first_run_complete exists)
-FLASH_ATTN_FLAG="/runpod-volume/vibevoice/.flash_attn_installed"
-if [ ! -f "$FLASH_ATTN_FLAG" ]; then
-    echo "=== Installing flash-attention (one-time) ==="
-    pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
-    touch "$FLASH_ATTN_FLAG"
-    echo "=== flash-attention installed ==="
-fi
-
 # Start handler
 echo "Starting VibeVoice handler..."
 exec python /workspace/vibevoice/handler.py
