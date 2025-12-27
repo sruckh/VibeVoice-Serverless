@@ -40,6 +40,10 @@ if [ ! -f "$FIRST_RUN_FLAG" ]; then
     pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 \
         --index-url https://download.pytorch.org/whl/cu128
 
+    # Install flash-attention for optimized inference
+    echo "Installing flash-attention..."
+    pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+
     # Install huggingface_hub and other dependencies
     echo "Installing additional dependencies..."
     pip install huggingface_hub runpod>=1.6.0 boto3>=1.26.0 toml soundfile>=0.12.1
@@ -75,6 +79,15 @@ else
     echo "=== Existing Installation Found - Skipping Setup ==="
     # Activate Virtual Environment
     source "$VENV_PATH/bin/activate"
+fi
+
+# One-time flash-attention installation (runs even if first_run_complete exists)
+FLASH_ATTN_FLAG="/runpod-volume/vibevoice/.flash_attn_installed"
+if [ ! -f "$FLASH_ATTN_FLAG" ]; then
+    echo "=== Installing flash-attention (one-time) ==="
+    pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+    touch "$FLASH_ATTN_FLAG"
+    echo "=== flash-attention installed ==="
 fi
 
 # Start handler

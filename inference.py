@@ -289,6 +289,11 @@ class VibeVoiceInference:
         speaker_name = speaker_name or config.DEFAULT_SPEAKER
         voice_path = self.voice_mapper.get_voice_path(speaker_name)
 
+        # Format text with speaker annotation for VibeVoice script format
+        # VibeVoice expects format: "SpeakerName: text content"
+        formatted_text = f"{speaker_name}: {text}"
+        log.info(f"[DEBUG] Formatted text for processor: {formatted_text[:100]}...")
+
         # Smart chunk text if it's too long
         chunks = self._smart_chunk_text(text, self.max_chunk_chars)
 
@@ -298,11 +303,11 @@ class VibeVoiceInference:
             try:
                 temp_txt_path = os.path.join(self.temp_dir, f"temp_{os.getpid()}.txt")
                 with open(temp_txt_path, 'w') as f:
-                    f.write(text)
+                    f.write(formatted_text)
 
                 with torch.no_grad():
                     inputs = self.processor(
-                        text=[text],
+                        text=[formatted_text],
                         voice_samples=[voice_path],
                         padding=True,
                         return_tensors="pt",
@@ -341,15 +346,18 @@ class VibeVoiceInference:
             for i, chunk_text in enumerate(chunks, 1):
                 log.info(f"Generating chunk {i}/{len(chunks)} ({len(chunk_text)} chars)...")
 
+                # Format each chunk with speaker annotation
+                formatted_chunk = f"{speaker_name}: {chunk_text}"
+
                 temp_txt_path = None
                 try:
                     temp_txt_path = os.path.join(self.temp_dir, f"temp_{os.getpid()}_{i}.txt")
                     with open(temp_txt_path, 'w') as f:
-                        f.write(chunk_text)
+                        f.write(formatted_chunk)
 
                     with torch.no_grad():
                         inputs = self.processor(
-                            text=[chunk_text],
+                            text=[formatted_chunk],
                             voice_samples=[voice_path],
                             padding=True,
                             return_tensors="pt",
