@@ -153,11 +153,11 @@ def handler(job):
         # Convert to audio bytes (MP3)
         log.info("Converting audio tensor to numpy...")
         audio_buffer = io.BytesIO()
-        
-        # Ensure wav is cpu numpy
+
+        # Ensure wav is cpu numpy (convert bfloat16 to float32 first for numpy compatibility)
         if hasattr(wav, 'cpu'):
-            wav = wav.cpu().numpy()
-        if hasattr(wav, 'numpy'):
+            wav = wav.float().cpu().numpy()
+        elif hasattr(wav, 'numpy'):
             wav = wav.numpy()
 
         # Handle shape - VibeVoice returns (samples,)
