@@ -84,8 +84,8 @@ All components persist on a RunPod network volume for fast subsequent startups (
 
 6. **Deploy**:
    - Click "Deploy"
-   - First run takes **5-10 minutes** (model download + setup)
-   - Subsequent runs take **30-60 seconds** (cached)
+   - First run takes **2-5 minutes** (PyTorch, flash-attention, VibeVoice installation + model download)
+   - Subsequent runs take **30-60 seconds** (model loading only)
 
 #### 2. Test the Endpoint
 
@@ -399,7 +399,7 @@ curl -X POST https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync \
 
 **1. First run timeout**
 - **Symptom:** Request times out on first deployment
-- **Solution:** First run takes 5-10 minutes. Increase RunPod timeout or wait for completion.
+- **Solution:** First run takes 2-5 minutes for installation and model download. Increase RunPod timeout if needed.
 
 **2. Model download fails**
 - **Symptom:** Error: "Failed to download model"
@@ -409,9 +409,9 @@ curl -X POST https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync \
 - **Symptom:** Error: "No voice files found"
 - **Solution:** Upload at least one `.wav` file to `/runpod-volume/vibevoice/demo/voices/`
 
-**4. Flash attention error**
-- **Symptom:** Warning about flash_attention_2
-- **Solution:** System automatically falls back to sdpa. No action needed.
+**4. Flash attention**
+- **Status:** Flash-attention 2 is automatically installed for optimal performance
+- **Fallback:** If flash_attention_2 fails, system automatically falls back to sdpa (slightly slower but still functional)
 
 **5. S3 upload fails**
 - **Symptom:** Audio returns as base64 instead of URL

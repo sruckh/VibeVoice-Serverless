@@ -26,65 +26,29 @@ class VoiceMapper:
 
     def setup_voice_presets(self):
         """Setup voice presets by scanning voices directory."""
-        import subprocess
-        
         voices_dir = Path(config.AUDIO_PROMPTS_DIR)
-        
-        # Debug: Log the exact path we're checking
-        log.info(f"[DEBUG] Checking for voice files at: {voices_dir}")
-        log.info(f"[DEBUG] voices_dir type: {type(voices_dir)}")
-        log.info(f"[DEBUG] voices_dir absolute: {voices_dir.absolute()}")
-        
-        # Debug: Try to list directory contents using subprocess
-        try:
-            result = subprocess.run(
-                ['ls', '-la', str(voices_dir)],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            log.info(f"[DEBUG] ls -la output (returncode={result.returncode}):")
-            log.info(f"[DEBUG] stdout:\n{result.stdout}")
-            if result.stderr:
-                log.info(f"[DEBUG] stderr:\n{result.stderr}")
-        except Exception as e:
-            log.warning(f"[DEBUG] Could not run ls command: {e}")
         
         if not voices_dir.exists():
             log.warning(f"Voices directory not found at {voices_dir}")
             self.voice_presets = {}
             return
         
-        # Debug: Log what os.listdir sees
-        try:
-            all_files = os.listdir(voices_dir)
-            log.info(f"[DEBUG] os.listdir found {len(all_files)} items: {all_files}")
-        except Exception as e:
-            log.error(f"[DEBUG] Error reading directory: {e}")
-            self.voice_presets = {}
-            return
-        
         # Scan for all WAV files in voices directory
         self.voice_presets = {}
-        wav_files = [f for f in all_files 
+        wav_files = [f for f in os.listdir(voices_dir) 
                     if f.lower().endswith('.wav') and os.path.isfile(os.path.join(voices_dir, f))]
-        
-        # Debug: Log filtering results
-        log.info(f"[DEBUG] Files ending with .wav (case-insensitive): {[f for f in all_files if f.lower().endswith('.wav')]}")
-        log.info(f"[DEBUG] Files passing isfile() check: {wav_files}")
         
         for wav_file in wav_files:
             name = os.path.splitext(wav_file)[0]
             full_path = os.path.join(voices_dir, wav_file)
             self.voice_presets[name] = full_path
-            log.info(f"[DEBUG] Registered voice: '{name}' -> {full_path}")
         
         self.voice_presets = dict(sorted(self.voice_presets.items()))
         log.info(f"Found {len(self.voice_presets)} voice files in {voices_dir}")
         if self.voice_presets:
             log.info(f"Available voices: {', '.join(self.voice_presets.keys())}")
         else:
-            log.warning(f"[DEBUG] No .wav files found in {voices_dir}")
+            log.warning(f"No .wav files found in {voices_dir}")
 
     def get_voice_path(self, speaker_name: str) -> str:
         """Get voice file path for a given speaker name"""
@@ -292,8 +256,6 @@ class VibeVoiceInference:
         # Format text with VibeVoice script format
         # VibeVoice expects "Speaker {number}: text" format, not custom names
         formatted_text = f"Speaker 1: {text}"
-        log.info(f"[DEBUG] Formatted text for processor: {formatted_text[:100]}...")
-        log.info(f"[DEBUG] Using voice file: {voice_path}")
 
         # Smart chunk text if it's too long
         chunks = self._smart_chunk_text(text, self.max_chunk_chars)
