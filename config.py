@@ -1,5 +1,7 @@
 import os
 
+# Trigger rebuild - 2025-12-27
+
 # Environment Variables
 HF_TOKEN = os.environ.get("HF_TOKEN")  # Required for model access
 
