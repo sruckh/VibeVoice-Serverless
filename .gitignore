@@ -15,3 +15,7 @@ CLAUDE.md
 FIX_PLAN.md
 IMPLEMENTATION.md
 VALIDATION_REPORT.md
+
+# Cloudflare Worker configuration (contains deployment-specific URLs/mappings)
+bridge/wrangler.toml
+bridge/voices.json

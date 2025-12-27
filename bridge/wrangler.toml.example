@@ -1,0 +1,26 @@
+name = "vibevoice-openai-bridge"
+main = "worker.js"
+compatibility_date = "2024-12-18"
+
+# R2 bucket binding for voice mappings
+[[r2_buckets]]
+binding = "VIBEVOICE_BUCKET"
+bucket_name = "vibevoice"  # Change to your R2 bucket name
+
+# Environment variables
+[vars]
+# Set this to your RunPod serverless endpoint URL
+# Example: https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/runsync
+RUNPOD_URL = "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/runsync"
+
+# Secrets (set with: wrangler secret put SECRET_NAME)
+# Don't put actual secret values here - use wrangler CLI to set them:
+#   wrangler secret put RUNPOD_API_KEY
+#   wrangler secret put AUTH_TOKEN (optional)
+
+# Observability (logging)
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
