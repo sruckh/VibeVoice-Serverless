@@ -46,7 +46,7 @@ if [ ! -f "$FIRST_RUN_FLAG" ]; then
 
     # Install huggingface_hub and other dependencies
     echo "Installing additional dependencies..."
-    pip install huggingface_hub runpod>=1.6.0 boto3>=1.26.0 toml soundfile>=0.12.1
+    pip install huggingface_hub runpod>=1.6.0 boto3>=1.26.0 toml soundfile>=0.12.1 pyloudnorm>=0.1.0
 
     # Clone VibeVoice repository
     echo "Cloning VibeVoice repository..."
