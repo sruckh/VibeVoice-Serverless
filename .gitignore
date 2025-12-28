@@ -19,3 +19,8 @@ VALIDATION_REPORT.md
 # Cloudflare Worker configuration (contains deployment-specific URLs/mappings)
 bridge/wrangler.toml
 bridge/voices.json
+.wrangler/
+bridge/.wrangler/
+node_modules/
+bridge/node_modules/
+voices.json
