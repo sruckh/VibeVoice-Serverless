@@ -63,16 +63,20 @@ Create a `voices.json` file that maps OpenAI voice names to your VibeVoice speak
 
 **Important:** The values (right side) must match the `.wav` filenames in `/runpod-volume/vibevoice/demo/voices/` (without the `.wav` extension).
 
-Upload to R2:
+Upload to R2 (**IMPORTANT: use `--remote` flag**):
 ```bash
 cd bridge/
-wrangler r2 object put vibevoice/voices.json --file=voices.json
+wrangler r2 object put vibevoice/voices.json --file=voices.json --remote
 ```
 
-Verify upload:
+Verify upload (this will display the JSON content):
 ```bash
-wrangler r2 object get vibevoice/voices.json
+wrangler r2 object get vibevoice/voices.json --remote --pipe
 ```
+
+**Critical:** Always use the `--remote` flag! Without it, Wrangler uploads to a local development R2 instance, and your deployed worker won't be able to access the file.
+
+If you see your voice mappings JSON, the upload was successful!
 
 ## Step 4: Configure Worker
 
