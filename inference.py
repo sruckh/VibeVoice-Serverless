@@ -237,41 +237,13 @@ class VibeVoiceInference:
         if len(chunks) > 1 and min_last_chunk_chars > 0:
             last_len = len(chunks[-1])
             if last_len < min_last_chunk_chars:
-                prev_words = chunks[-2].split()
-                last_words = chunks[-1].split()
-                moved = 0
-                while prev_words and last_len < min_last_chunk_chars:
-                    word = prev_words.pop()
-                    last_words.insert(0, word)
-                    moved += 1
-                    last_len = len(" ".join(last_words))
-                    if last_len > max_chars:
-                        last_words.pop(0)
-                        prev_words.append(word)
-                        last_len = len(" ".join(last_words))
-                        moved -= 1
-                        break
-
-                new_prev = " ".join(prev_words).strip()
-                new_last = " ".join(last_words).strip()
-
-                if new_prev and new_last:
-                    chunks[-2] = new_prev
-                    chunks[-1] = new_last
-                    log.info(
-                        "Rebalanced last chunk (%s chars) by moving %s words (min %s).",
-                        last_len,
-                        moved,
-                        min_last_chunk_chars,
-                    )
-                else:
-                    chunks[-2] = f"{chunks[-2]} {chunks[-1]}".strip()
-                    chunks.pop()
-                    log.info(
-                        "Last chunk too short (%s chars); merged into previous (min %s).",
-                        last_len,
-                        min_last_chunk_chars,
-                    )
+                chunks[-2] = f"{chunks[-2]} {chunks[-1]}".strip()
+                chunks.pop()
+                log.info(
+                    "Last chunk too short (%s chars); merged into previous (min %s).",
+                    last_len,
+                    min_last_chunk_chars,
+                )
 
         if not chunks:
             return [text]
@@ -411,9 +383,26 @@ class VibeVoiceInference:
                         os.remove(temp_txt_path)
                     raise
 
-            # Concatenate all audio chunks
+            # Concatenate all audio chunks (optionally with short silence between chunks)
             if audio_chunks:
-                concatenated_audio = torch.cat(audio_chunks, dim=-1)
+                silence_ms = max(0, int(getattr(config, "CHUNK_SILENCE_MS", 0)))
+                silence_samples = int(config.DEFAULT_SAMPLE_RATE * (silence_ms / 1000.0))
+
+                if silence_samples > 0 and len(audio_chunks) > 1:
+                    combined = []
+                    for idx, chunk in enumerate(audio_chunks):
+                        if idx > 0:
+                            silence = torch.zeros(
+                                silence_samples,
+                                device=chunk.device,
+                                dtype=chunk.dtype,
+                            )
+                            combined.append(silence)
+                        combined.append(chunk)
+                    concatenated_audio = torch.cat(combined, dim=-1)
+                else:
+                    concatenated_audio = torch.cat(audio_chunks, dim=-1)
+
                 log.info(f"Concatenated {len(audio_chunks)} chunks → {concatenated_audio.shape[-1]} samples ({concatenated_audio.shape[-1]/config.DEFAULT_SAMPLE_RATE:.1f}s)")
                 return concatenated_audio
             else:

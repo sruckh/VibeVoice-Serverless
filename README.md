@@ -72,8 +72,9 @@ All components persist on a RunPod network volume for fast subsequent startups (
    # Optional - Tuning
    MAX_TEXT_LENGTH=2000
    DEFAULT_SAMPLE_RATE=24000
-   MAX_CHUNK_CHARS=300
+   MAX_CHUNK_CHARS=1000
    MIN_LAST_CHUNK_CHARS=150
+   CHUNK_SILENCE_MS=40
    DEFAULT_SPEAKER=Alice
    DEFAULT_CFG_SCALE=1.3
    ```
@@ -298,8 +299,9 @@ Environment variables for tuning:
 | `S3_REGION` | S3 region | `us-east-1` |
 | `MAX_TEXT_LENGTH` | Maximum text length | `2000` |
 | `DEFAULT_SAMPLE_RATE` | Audio sample rate (Hz) | `24000` |
-| `MAX_CHUNK_CHARS` | Maximum characters per chunk | `300` |
-| `MIN_LAST_CHUNK_CHARS` | Minimum characters in final chunk before rebalancing | `150` |
+| `MAX_CHUNK_CHARS` | Maximum characters per chunk | `1000` |
+| `MIN_LAST_CHUNK_CHARS` | Minimum characters in final chunk before merge | `150` |
+| `CHUNK_SILENCE_MS` | Silence padding between chunks (ms) | `40` |
 | `DEFAULT_SPEAKER` | Default voice name | `Alice` |
 | `DEFAULT_CFG_SCALE` | Default CFG scale | `1.3` |
 

@@ -106,8 +106,9 @@ docker build -t vibevoice-runpod .
 **Optional (Tuning):**
 - `MAX_TEXT_LENGTH` (default: 2000)
 - `DEFAULT_SAMPLE_RATE` (default: 24000)
-- `MAX_CHUNK_CHARS` (default: 300)
-- `MIN_LAST_CHUNK_CHARS` (default: 150) - minimum last-chunk size before rebalancing
+- `MAX_CHUNK_CHARS` (default: 1000)
+- `MIN_LAST_CHUNK_CHARS` (default: 150) - minimum last-chunk size before merge
+- `CHUNK_SILENCE_MS` (default: 40) - silence padding between chunks
 - `DEFAULT_SPEAKER` (default: "Alice")
 - `DEFAULT_CFG_SCALE` (default: 1.3)
 
@@ -229,7 +230,7 @@ wrangler r2 object put VIBEVOICE_BUCKET/voices.json --file=voices.json
 1. **VibeVoice import errors** - Remember it's cloned at runtime, not available during build
 2. **Flash Attention failures** - GPU must support flash_attention_2, otherwise falls back to sdpa
 3. **Voice file not found** - Check exact filename matches speaker_name (case-insensitive partial matching supported)
-4. **Long generation times** - Text chunking activates above `MAX_CHUNK_CHARS` (300 default), each chunk processed sequentially
+4. **Long generation times** - Text chunking activates above `MAX_CHUNK_CHARS` (1000 default), each chunk processed sequentially
 5. **S3 upload failures** - Check all S3 environment variables are set; system falls back to base64
 6. **First run timeout** - First cold start takes 2-3 minutes; increase RunPod timeout if needed
 
