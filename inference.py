@@ -230,6 +230,21 @@ class VibeVoiceInference:
 
         chunks = [c for c in chunks if c.strip()]
 
+        min_last_chunk_chars = min(
+            getattr(config, "MIN_LAST_CHUNK_CHARS", 0),
+            max_chars,
+        )
+        if len(chunks) > 1 and min_last_chunk_chars > 0:
+            last_len = len(chunks[-1])
+            if last_len < min_last_chunk_chars:
+                chunks[-2] = f"{chunks[-2]} {chunks[-1]}".strip()
+                chunks.pop()
+                log.info(
+                    "Last chunk too short (%s chars); merged into previous (min %s).",
+                    last_len,
+                    min_last_chunk_chars,
+                )
+
         if not chunks:
             return [text]
 
@@ -248,6 +263,15 @@ class VibeVoiceInference:
             self.load_model()
 
         log.info(f"Generating audio for text ({len(text)} chars): {text[:50]}...")
+
+        session_seed = int.from_bytes(os.urandom(4), "little")
+        log.info(f"Using session seed: {session_seed}")
+
+        def _set_seed(seed: int) -> None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+            np.random.seed(seed)
 
         # Get voice path
         speaker_name = speaker_name or config.DEFAULT_SPEAKER
@@ -269,6 +293,7 @@ class VibeVoiceInference:
                     f.write(formatted_text)
 
                 with torch.no_grad():
+                    _set_seed(session_seed)
                     # voice_samples must be a list of lists: [[path1, path2, ...]]
                     inputs = self.processor(
                         text=[formatted_text],
@@ -320,6 +345,7 @@ class VibeVoiceInference:
                         f.write(formatted_chunk)
 
                     with torch.no_grad():
+                        _set_seed(session_seed)
                         # voice_samples must be a list of lists
                         inputs = self.processor(
                             text=[formatted_chunk],

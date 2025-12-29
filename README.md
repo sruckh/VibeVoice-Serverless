@@ -73,6 +73,7 @@ All components persist on a RunPod network volume for fast subsequent startups (
    MAX_TEXT_LENGTH=2000
    DEFAULT_SAMPLE_RATE=24000
    MAX_CHUNK_CHARS=300
+   MIN_LAST_CHUNK_CHARS=150
    DEFAULT_SPEAKER=Alice
    DEFAULT_CFG_SCALE=1.3
    ```
@@ -298,6 +299,7 @@ Environment variables for tuning:
 | `MAX_TEXT_LENGTH` | Maximum text length | `2000` |
 | `DEFAULT_SAMPLE_RATE` | Audio sample rate (Hz) | `24000` |
 | `MAX_CHUNK_CHARS` | Maximum characters per chunk | `300` |
+| `MIN_LAST_CHUNK_CHARS` | Minimum characters in final chunk before merge | `150` |
 | `DEFAULT_SPEAKER` | Default voice name | `Alice` |
 | `DEFAULT_CFG_SCALE` | Default CFG scale | `1.3` |
 
