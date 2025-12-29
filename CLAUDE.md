@@ -107,7 +107,7 @@ docker build -t vibevoice-runpod .
 - `MAX_TEXT_LENGTH` (default: 2000)
 - `DEFAULT_SAMPLE_RATE` (default: 24000)
 - `MAX_CHUNK_CHARS` (default: 300)
-- `MIN_LAST_CHUNK_CHARS` (default: 150)
+- `MIN_LAST_CHUNK_CHARS` (default: 150) - minimum last-chunk size before rebalancing
 - `DEFAULT_SPEAKER` (default: "Alice")
 - `DEFAULT_CFG_SCALE` (default: 1.3)
 
