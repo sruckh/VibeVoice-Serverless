@@ -4,8 +4,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     PYTHONUNBUFFERED=1 \
-    HF_HOME=/runpod-volume/vibevoice/hf_home \
-    HF_HUB_CACHE=/runpod-volume/vibevoice/hf_cache \
     TORCH_HOME=/runpod-volume/vibevoice/torch_cache
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

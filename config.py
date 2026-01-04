@@ -3,11 +3,13 @@ import os
 # Environment Variables
 HF_TOKEN = os.environ.get("HF_TOKEN")  # Required for model access
 
-# HuggingFace cache configuration
-HF_HOME = os.environ.get("HF_HOME", "/runpod-volume/vibevoice/hf_home")
-HF_HUB_CACHE = os.environ.get("HF_HUB_CACHE", "/runpod-volume/vibevoice/hf_cache")
-os.environ["HF_HOME"] = HF_HOME
-os.environ["HF_HUB_CACHE"] = HF_HUB_CACHE
+# HuggingFace cache configuration (use default unless explicitly set)
+HF_HOME = os.environ.get("HF_HOME")
+HF_HUB_CACHE = os.environ.get("HF_HUB_CACHE")
+if HF_HOME:
+    os.environ["HF_HOME"] = HF_HOME
+if HF_HUB_CACHE:
+    os.environ["HF_HUB_CACHE"] = HF_HUB_CACHE
 
 # Torch cache configuration
 TORCH_HOME = os.environ.get("TORCH_HOME", "/runpod-volume/vibevoice/torch_cache")

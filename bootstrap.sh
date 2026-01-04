@@ -5,11 +5,9 @@ echo "=== VibeVoice Runpod Serverless Bootstrap ==="
 
 # Create vibevoice directory structure on network volume
 echo "Creating directory structure on network volume..."
-mkdir -p /runpod-volume/vibevoice/{hf_home,hf_cache,models,output,demo/voices,torch_cache}
+mkdir -p /runpod-volume/vibevoice/{models,output,demo/voices,torch_cache}
 
-# Set environment variables for HuggingFace cache
-export HF_HOME="/runpod-volume/vibevoice/hf_home"
-export HF_HUB_CACHE="/runpod-volume/vibevoice/hf_cache"
+# Set environment variables for Torch cache
 export TORCH_HOME="/runpod-volume/vibevoice/torch_cache"
 
 # Export HF_TOKEN if available
@@ -68,9 +66,10 @@ if [ ! -f "$FIRST_RUN_FLAG" ]; then
 from huggingface_hub import snapshot_download
 import os
 
-cache_dir = os.environ.get('HF_HUB_CACHE', '/runpod-volume/vibevoice/hf_cache')
-print(f'Downloading model to {cache_dir}...')
-snapshot_download('vibevoice/VibeVoice-7B', cache_dir=cache_dir)
+cache_dir = os.environ.get('HF_HUB_CACHE')
+print(f'Downloading model to {cache_dir or "default HF cache"}...')
+kwargs = {"cache_dir": cache_dir} if cache_dir else {}
+snapshot_download('vibevoice/VibeVoice-7B', **kwargs)
 print('Model download complete')
 "
 
