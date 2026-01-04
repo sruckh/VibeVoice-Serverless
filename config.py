@@ -9,6 +9,10 @@ HF_HUB_CACHE = os.environ.get("HF_HUB_CACHE", "/runpod-volume/vibevoice/hf_cache
 os.environ["HF_HOME"] = HF_HOME
 os.environ["HF_HUB_CACHE"] = HF_HUB_CACHE
 
+# Torch cache configuration
+TORCH_HOME = os.environ.get("TORCH_HOME", "/runpod-volume/vibevoice/torch_cache")
+os.environ["TORCH_HOME"] = TORCH_HOME
+
 # S3 Configuration
 S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL")
 S3_ACCESS_KEY_ID = os.environ.get("S3_ACCESS_KEY_ID")

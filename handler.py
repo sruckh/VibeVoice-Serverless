@@ -177,6 +177,8 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
 
     try:
         chunk_num = 0
+        if output_format == "linacodec_tokens" and not LINACODEC_AVAILABLE:
+            raise RuntimeError("LinaCodec not available")
         for wav_chunk in inference_engine.generate_stream(
             text=text,
             speaker_name=speaker_name,
@@ -235,96 +237,90 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
         log.error(f"Streaming failed: {e}")
         yield {"error": str(e)}
 
-def handler(job):
-    """Runpod serverless handler
-
-    Expected input format:
-    {
-        "text": str (required) - Text to synthesize
-        "speaker_name": str (optional) - Speaker name for voice cloning (default: "Alice")
-        "cfg_scale": float (optional) - CFG scale (default: 1.3)
-        "disable_prefill": bool (optional) - Disable voice cloning (default: False)
-    }
-
-    Returns:
-    {
-        "status": "success",
-        "sample_rate": int,
-        "duration_sec": float,
-        "audio_url": str (if S3 configured) OR "audio_base64": str (fallback)
-    }
-    """
-    # Clean up old output files (older than 2 days)
-    cleanup_old_files(config.OUTPUT_DIR, days=2)
-
-    job_input = job.get("input", {})
-
-    # Extract parameters
+def _extract_and_validate_params(job_input):
+    """Extract and validate parameters from job input."""
     text = job_input.get("text")
     if not text or not text.strip():
-        return {"error": "Missing or empty 'text' parameter"}
+        return None, {"error": "Missing or empty 'text' parameter"}
 
     text = text.strip()
     speaker_name = job_input.get("speaker_name", config.DEFAULT_SPEAKER)
     session_id = job_input.get("session_id", str(uuid.uuid4()))
 
-    # VibeVoice generation parameters
     try:
         cfg_scale = float(job_input.get("cfg_scale", config.DEFAULT_CFG_SCALE))
         if cfg_scale <= 0:
-            return {"error": "cfg_scale must be a positive number"}
+            return None, {"error": "cfg_scale must be a positive number"}
     except (ValueError, TypeError):
-        return {"error": f"cfg_scale must be a valid number, got: {job_input.get('cfg_scale')}"}
+        return None, {"error": f"cfg_scale must be a valid number, got: {job_input.get('cfg_scale')}"}
 
     disable_prefill = bool(job_input.get("disable_prefill", False))
-    stream = bool(job_input.get("stream", False))
-    output_format = job_input.get("output_format", "pcm_16")
 
-    # Validate input
     if len(text) > config.MAX_TEXT_LENGTH:
-        return {"error": f"Text length exceeds maximum of {config.MAX_TEXT_LENGTH}"}
+        return None, {"error": f"Text length exceeds maximum of {config.MAX_TEXT_LENGTH}"}
+
+    return {
+        "text": text,
+        "speaker_name": speaker_name,
+        "session_id": session_id,
+        "cfg_scale": cfg_scale,
+        "disable_prefill": disable_prefill,
+    }, None
+
+def handler_stream(job_input, output_format):
+    """Streaming mode handler - yields audio chunks as they're generated."""
+    params, error = _extract_and_validate_params(job_input)
+    if error:
+        yield error
+        return
+
+    if output_format not in {"pcm_16", "mp3", "linacodec_tokens"}:
+        yield {"error": f"Unknown output_format: {output_format}"}
+        return
+
+    yield from stream_audio_chunks(
+        text=params["text"],
+        speaker_name=params["speaker_name"],
+        cfg_scale=params["cfg_scale"],
+        disable_prefill=params["disable_prefill"],
+        output_format=output_format,
+    )
+
+def handler_batch(job, output_format):
+    """Batch mode handler - generates complete audio and returns URL/base64"""
+    # Clean up old output files (older than 2 days)
+    cleanup_old_files(config.OUTPUT_DIR, days=2)
+
+    job_input = job.get("input", {})
+    params, error = _extract_and_validate_params(job_input)
+    if error:
+        return error
 
     try:
-        if stream:
-            return runpod.stream(
-                stream_audio_chunks(
-                    text=text,
-                    speaker_name=speaker_name,
-                    cfg_scale=cfg_scale,
-                    disable_prefill=disable_prefill,
-                    output_format=output_format,
-                )
-            )
-
-        # Generate audio (batch)
         wav = inference_engine.generate(
-            text=text,
-            speaker_name=speaker_name,
-            cfg_scale=cfg_scale,
-            disable_prefill=disable_prefill,
+            text=params["text"],
+            speaker_name=params["speaker_name"],
+            cfg_scale=params["cfg_scale"],
+            disable_prefill=params["disable_prefill"],
         )
 
         if wav is None:
             return {"error": "Failed to generate audio"}
 
-        # Use configured sample rate
         sample_rate = config.DEFAULT_SAMPLE_RATE
         log.info(f"Using sample rate: {sample_rate}")
 
-        # Convert to numpy
         log.info("Converting audio tensor to numpy...")
         wav = to_numpy_audio(wav)
 
         if output_format != "linacodec_tokens":
-            # Apply loudness normalization
             try:
                 import pyloudnorm as pyln
-                meter = pyln.Meter(sample_rate)  # create BS.1770 meter
+                meter = pyln.Meter(sample_rate)
                 loudness = meter.integrated_loudness(wav)
 
-                # Normalize to -20 LUFS (standard for TTS)
                 target_loudness = -20.0
-                if loudness > -100:  # Only normalize if loudness is measurable
+                if loudness > -100:
                     normalized_wav = pyln.normalize.loudness(wav, loudness, target_loudness)
                     log.info(f"Normalized audio from {loudness:.1f} LUFS to {target_loudness} LUFS")
                     wav = normalized_wav
@@ -357,16 +353,13 @@ def handler(job):
                 "audio_base64": pcm16_base64(wav),
             }
 
-        # Default: MP3
         audio_buffer = io.BytesIO()
         log.info(f"Writing audio to buffer (shape: {wav.shape})...")
         sf.write(audio_buffer, wav, sample_rate, format="MP3")
         audio_buffer.seek(0)
 
-        # Upload to S3 or return base64
-        filename = f"{session_id}_{uuid.uuid4()}.mp3"
+        filename = f"{params['session_id']}_{uuid.uuid4()}.mp3"
 
-        # Local output path for persistence in volume
         output_path = os.path.join(config.OUTPUT_DIR, filename)
         os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
@@ -374,7 +367,6 @@ def handler(job):
         with open(output_path, "wb") as f:
             f.write(audio_buffer.getbuffer())
 
-        # Reset buffer for S3 upload
         audio_buffer.seek(0)
 
         log.info("Uploading to S3 (if configured)...")
@@ -389,7 +381,6 @@ def handler(job):
         if s3_url:
             response["audio_url"] = s3_url
         else:
-            # Fallback to base64
             audio_buffer.seek(0)
             b64_audio = base64.b64encode(audio_buffer.read()).decode("utf-8")
             response["audio_base64"] = b64_audio
@@ -400,6 +391,25 @@ def handler(job):
     except Exception as e:
         log.error(f"Inference failed: {e}")
         return {"error": str(e)}
+
+def handler(job):
+    """Runpod serverless handler (streaming + batch)."""
+    job_input = job.get("input", {})
+    stream = bool(job_input.get("stream", False))
+    output_format = job_input.get("output_format")
+
+    if stream and not output_format:
+        output_format = "pcm_16"
+    if not stream and not output_format:
+        output_format = "mp3"
+
+    if stream:
+        log.info(f"[Handler] Streaming mode requested: format={output_format}")
+        yield from handler_stream(job_input, output_format)
+        return
+
+    result = handler_batch(job, output_format)
+    yield result
 
 if __name__ == "__main__":
     runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})

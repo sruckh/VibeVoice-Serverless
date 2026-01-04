@@ -5,7 +5,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/runpod-volume/vibevoice/hf_home \
-    HF_HUB_CACHE=/runpod-volume/vibevoice/hf_cache
+    HF_HUB_CACHE=/runpod-volume/vibevoice/hf_cache \
+    TORCH_HOME=/runpod-volume/vibevoice/torch_cache
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 python3.12-venv python3.12-dev python3-pip \

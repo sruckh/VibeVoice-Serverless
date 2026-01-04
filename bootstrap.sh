@@ -5,11 +5,12 @@ echo "=== VibeVoice Runpod Serverless Bootstrap ==="
 
 # Create vibevoice directory structure on network volume
 echo "Creating directory structure on network volume..."
-mkdir -p /runpod-volume/vibevoice/{hf_home,hf_cache,models,output,demo/voices}
+mkdir -p /runpod-volume/vibevoice/{hf_home,hf_cache,models,output,demo/voices,torch_cache}
 
 # Set environment variables for HuggingFace cache
 export HF_HOME="/runpod-volume/vibevoice/hf_home"
 export HF_HUB_CACHE="/runpod-volume/vibevoice/hf_cache"
+export TORCH_HOME="/runpod-volume/vibevoice/torch_cache"
 
 # Export HF_TOKEN if available
 if [ -n "$HF_TOKEN" ]; then
@@ -47,6 +48,8 @@ if [ ! -f "$FIRST_RUN_FLAG" ]; then
     # Install huggingface_hub and other dependencies
     echo "Installing additional dependencies..."
     pip install huggingface_hub runpod>=1.6.0 boto3>=1.26.0 toml soundfile>=0.12.1 pyloudnorm>=0.1.0
+    echo "Installing LinaCodec..."
+    pip install git+https://github.com/ysharma3501/LinaCodec.git
 
     # Clone VibeVoice repository
     echo "Cloning VibeVoice repository..."
