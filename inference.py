@@ -407,3 +407,81 @@ class VibeVoiceInference:
                 return concatenated_audio
             else:
                 return None
+
+    def generate_stream(
+        self,
+        text,
+        speaker_name=None,
+        cfg_scale=1.3,
+        disable_prefill=False,
+    ):
+        """Generate audio in chunks and yield each chunk as it completes."""
+        if self.model is None:
+            self.load_model()
+
+        log.info(f"Streaming audio for text ({len(text)} chars): {text[:50]}...")
+
+        session_seed = int.from_bytes(os.urandom(4), "little")
+        log.info(f"Using session seed: {session_seed}")
+
+        def _set_seed(seed: int) -> None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+            np.random.seed(seed)
+
+        # Get voice path
+        speaker_name = speaker_name or config.DEFAULT_SPEAKER
+        voice_path = self.voice_mapper.get_voice_path(speaker_name)
+
+        # Smart chunk text if it's too long
+        chunks = self._smart_chunk_text(text, self.max_chunk_chars)
+
+        log.info(f"Streaming {len(chunks)} chunks...")
+
+        for i, chunk_text in enumerate(chunks, 1):
+            log.info(f"Generating chunk {i}/{len(chunks)} ({len(chunk_text)} chars)...")
+
+            formatted_chunk = f"Speaker 1: {chunk_text}"
+            temp_txt_path = None
+
+            try:
+                temp_txt_path = os.path.join(self.temp_dir, f"temp_{os.getpid()}_{i}.txt")
+                with open(temp_txt_path, 'w') as f:
+                    f.write(formatted_chunk)
+
+                with torch.no_grad():
+                    _set_seed(session_seed)
+                    inputs = self.processor(
+                        text=[formatted_chunk],
+                        voice_samples=[[voice_path]],
+                        padding=True,
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                    )
+
+                    # Move tensors to target device
+                    for k, v in inputs.items():
+                        if torch.is_tensor(v):
+                            inputs[k] = v.to(self.device)
+
+                    chunk_wav = self.model.generate(
+                        **inputs,
+                        max_new_tokens=None,
+                        cfg_scale=cfg_scale,
+                        tokenizer=self.processor.tokenizer,
+                        generation_config={'do_sample': False},
+                        verbose=False,
+                        is_prefill=not disable_prefill,
+                    )
+
+                if temp_txt_path and os.path.exists(temp_txt_path):
+                    os.remove(temp_txt_path)
+
+                if chunk_wav.speech_outputs and chunk_wav.speech_outputs[0] is not None:
+                    yield chunk_wav.speech_outputs[0]
+
+            except Exception:
+                if temp_txt_path and os.path.exists(temp_txt_path):
+                    os.remove(temp_txt_path)
+                raise

@@ -15,6 +15,10 @@ CLAUDE.md
 FIX_PLAN.md
 IMPLEMENTATION.md
 VALIDATION_REPORT.md
+IMPLEMENTATION-ORDER.md
+LINACODEC-BE.md
+LINACODEC-FE.md
+LINACODEC-MW.md
 
 # Cloudflare Worker configuration (contains deployment-specific URLs/mappings)
 bridge/wrangler.toml

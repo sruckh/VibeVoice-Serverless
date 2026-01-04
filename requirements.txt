@@ -4,3 +4,4 @@ toml
 soundfile>=0.12.1
 huggingface_hub
 pyloudnorm>=0.1.0
+git+https://github.com/ysharma3501/LinaCodec.git

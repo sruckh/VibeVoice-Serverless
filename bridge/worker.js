@@ -23,8 +23,15 @@ export default {
     }
 
     const url = new URL(request.url);
-    if (url.pathname !== '/v1/audio/speech') {
-      return errorResponse('Not found. Use POST /v1/audio/speech', 404);
+    const path = url.pathname;
+
+    // Route to streaming or batch
+    if (path === '/api/tts/stream') {
+      return handleStreamingTTS(request, env, ctx);
+    }
+
+    if (path !== '/v1/audio/speech') {
+      return errorResponse('Not found. Use POST /v1/audio/speech or /api/tts/stream', 404);
     }
 
     // Authenticate request (if AUTH_TOKEN is configured)
@@ -79,7 +86,7 @@ export default {
       const openaiRequest = await request.json();
 
       // Validate required fields
-      const { model, input, voice, response_format = 'mp3', speed = 1.0 } = openaiRequest;
+      const { model, input, voice, response_format = 'mp3', speed = 1.0, stream = false } = openaiRequest;
 
       if (!model) {
         return openaiError('Missing required parameter: model', 'invalid_request_error', 'model');
@@ -106,14 +113,29 @@ export default {
       }
 
       // Warn about unsupported features (but don't error)
-      if (response_format !== 'mp3') {
-        console.warn(`Unsupported response_format: ${response_format}. Only 'mp3' is supported. Defaulting to mp3.`);
+      if (response_format !== 'mp3' && response_format !== 'pcm') {
+        console.warn(`Unsupported response_format: ${response_format}. Only 'mp3' or 'pcm' supported. Defaulting to mp3.`);
       }
       if (speed !== 1.0) {
         console.warn(`Speed parameter (${speed}) is not supported and will be ignored.`);
       }
 
-      console.log(`OpenAI TTS request: voice=${voice} (${speakerName}), text_len=${input.length}, format=${response_format}`);
+      console.log(`OpenAI TTS request: voice=${voice} (${speakerName}), text_len=${input.length}, format=${response_format}, stream=${stream}`);
+
+      if (stream) {
+        return handleOpenAIStreaming(env, {
+          text: input,
+          speaker_name: speakerName,
+          output_format: response_format === 'pcm' ? 'pcm_16' : 'mp3'
+        });
+      }
+
+      if (!env.RUNPOD_URL) {
+        return openaiError('RunPod endpoint not configured', 'server_error', null);
+      }
+      if (!env.RUNPOD_API_KEY) {
+        return openaiError('RunPod API key not configured', 'server_error', null);
+      }
 
       // Translate to RunPod custom format
       const runpodRequest = {
@@ -121,34 +143,23 @@ export default {
           text: input,
           speaker_name: speakerName,
           cfg_scale: 1.3,
-          disable_prefill: false
+          disable_prefill: false,
+          output_format: response_format === 'pcm' ? 'pcm_16' : 'mp3'
         }
       };
 
-      // Call RunPod serverless
-      const runpodResponse = await fetch(env.RUNPOD_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${env.RUNPOD_API_KEY}`
-        },
-        body: JSON.stringify(runpodRequest)
+      const runpodUrls = buildRunpodUrls(env.RUNPOD_URL);
+      const runpodResult = await callRunpodRunsync({
+        runpodUrls,
+        apiKey: env.RUNPOD_API_KEY,
+        runpodRequest
       });
 
-      if (!runpodResponse.ok) {
-        const errorText = await runpodResponse.text();
-        console.error('RunPod error:', errorText);
-        return openaiError(
-          `RunPod service error: ${runpodResponse.status} ${runpodResponse.statusText}`,
-          'server_error',
-          null
-        );
-      }
-
-      const runpodResult = await runpodResponse.json();
-
       // Extract output from RunPod response
-      const output = runpodResult.output || runpodResult;
+      let output = runpodResult.output || runpodResult;
+      if (Array.isArray(output) && output.length === 1) {
+        output = output[0];
+      }
 
       // Check for errors in response
       if (output.error || runpodResult.error) {
@@ -201,6 +212,343 @@ export default {
     }
   }
 };
+
+/**
+ * Handle streaming TTS requests from the frontend
+ */
+async function handleStreamingTTS(request, env, ctx) {
+  const requestId = crypto.randomUUID();
+  const startTime = Date.now();
+
+  console.log(`[Tier 2][CF][${requestId}] Streaming TTS request received`);
+
+  try {
+    const { text, voice, service } = await request.json();
+
+    // Validation
+    if (!text || text.trim().length === 0) {
+      return errorResponse('Text is required', 400);
+    }
+
+    if (!voice) {
+      return errorResponse('Voice is required', 400);
+    }
+
+    // Load voice mappings from R2
+    const voiceMappings = await getVoiceMappings(env);
+
+    // Resolve voice to speaker name
+    const speakerName = voiceMappings[voice];
+    if (!speakerName) {
+      const available = Object.keys(voiceMappings).join(', ');
+      return errorResponse(`Invalid voice '${voice}'. Available voices: ${available}`, 400);
+    }
+
+    // Get RunPod endpoint
+    const runpodUrls = buildRunpodUrls(env.RUNPOD_URL);
+    const apiKey = env.RUNPOD_API_KEY;
+
+    if (!env.RUNPOD_URL) {
+      return errorResponse('RunPod endpoint not configured', 500);
+    }
+
+    if (!apiKey) {
+      return errorResponse('RunPod API key not configured', 500);
+    }
+
+    console.log(`[Tier 2][CF][${requestId}] Connecting to Tier 3 (RunPod) for voice=${voice} (${speakerName})...`);
+
+    // Create transform stream for forwarding
+    const { readable, writable } = new TransformStream();
+
+    // Start forwarding in background
+    ctx.waitUntil(forwardRunPodStream({
+      runpodUrls,
+      apiKey,
+      text,
+      speakerName,
+      service,
+      writable,
+      requestId,
+      startTime
+    }));
+
+    // Return streaming response immediately
+    return new Response(readable, {
+      headers: {
+        'Content-Type': 'audio/octet-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+      }
+    });
+
+  } catch (error) {
+    console.error(`[Tier 2][CF] Error:`, error);
+    return errorResponse(error.message, 500);
+  }
+}
+
+/**
+ * Forward RunPod stream to client (Tier 1)
+ */
+async function forwardRunPodStream({ runpodUrls, apiKey, text, speakerName, service, writable, requestId, startTime }) {
+  const writer = writable.getWriter();
+
+  try {
+    // Submit async job to Tier 3 (RunPod)
+    const runpodResponse = await fetch(runpodUrls.run, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        input: {
+          text,
+          speaker_name: speakerName,
+          service,
+          stream: true,
+          output_format: 'pcm_16'
+        }
+      })
+    });
+
+    if (!runpodResponse.ok) {
+      const errorText = await runpodResponse.text();
+      throw new Error(`Tier 3 error: ${runpodResponse.status} - ${errorText}`);
+    }
+
+    const runpodResult = await runpodResponse.json();
+    const jobId = extractRunpodJobId(runpodResult);
+    if (!jobId) {
+      throw new Error(`RunPod did not return a job id: ${JSON.stringify(runpodResult)}`);
+    }
+
+    console.log(`[Tier 2][CF][${requestId}] Tier 3 accepted job ${jobId}, streaming...`);
+
+    const { totalChunks, totalBytes } = await pollRunpodStream({
+      runpodUrls,
+      apiKey,
+      jobId,
+      writer,
+      requestId
+    });
+
+    const elapsed = Date.now() - startTime;
+    console.log(`[Tier 2][CF][${requestId}] Stream complete: ${totalChunks} chunks, ${totalBytes} bytes, ${elapsed}ms`);
+
+  } catch (error) {
+    console.error(`[Tier 2][CF][${requestId}] Forward error:`, error);
+  } finally {
+    await writer.close();
+  }
+}
+
+async function handleOpenAIStreaming(env, params) {
+  const { text, speaker_name, output_format } = params;
+  const requestId = crypto.randomUUID();
+
+  const runpodUrls = buildRunpodUrls(env.RUNPOD_URL);
+
+  const runResponse = await fetch(runpodUrls.run, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${env.RUNPOD_API_KEY}`
+    },
+    body: JSON.stringify({
+      input: {
+        text,
+        speaker_name,
+        stream: true,
+        output_format
+      }
+    })
+  });
+
+  if (!runResponse.ok) {
+    const errorText = await runResponse.text();
+    throw new Error(`RunPod submit failed: ${runResponse.status} - ${errorText}`);
+  }
+
+  const jobData = await runResponse.json();
+  const jobId = extractRunpodJobId(jobData);
+  if (!jobId) {
+    throw new Error(`RunPod did not return a job id: ${JSON.stringify(jobData)}`);
+  }
+
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+
+  (async () => {
+    try {
+      await pollRunpodStream({
+        runpodUrls,
+        apiKey: env.RUNPOD_API_KEY,
+        jobId,
+        writer,
+        requestId
+      });
+    } catch (e) {
+      console.error(`[Tier 2][CF][${requestId}] Streaming error:`, e);
+    } finally {
+      await writer.close();
+    }
+  })();
+
+  return new Response(readable, {
+    headers: {
+      'Content-Type': output_format === 'mp3' ? 'audio/mpeg' : 'audio/pcm',
+      'Transfer-Encoding': 'chunked',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no'
+    }
+  });
+}
+
+function buildRunpodUrls(runpodUrl) {
+  const base = runpodUrl.replace(/\/(runsync|run|status)(\/.*)?$/, '');
+  return {
+    runsync: `${base}/runsync`,
+    run: `${base}/run`,
+    status: `${base}/status`,
+    stream: `${base}/stream`
+  };
+}
+
+function extractRunpodJobId(runpodResult) {
+  return runpodResult.id || runpodResult.jobId || runpodResult.job_id;
+}
+
+async function callRunpodRunsync({ runpodUrls, apiKey, runpodRequest }) {
+  const runpodResponse = await fetch(runpodUrls.runsync, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(runpodRequest)
+  });
+
+  if (!runpodResponse.ok) {
+    const errorText = await runpodResponse.text();
+    console.error('RunPod error:', errorText);
+    throw new Error(`RunPod service error: ${runpodResponse.status} ${runpodResponse.statusText}`);
+  }
+
+  const runpodResult = await runpodResponse.json();
+
+  if (runpodResult.status === 'IN_PROGRESS' && runpodResult.id) {
+    return pollRunpodStatus({ runpodUrls, apiKey, jobId: runpodResult.id });
+  }
+
+  if (runpodResult.status === 'FAILED') {
+    throw new Error(runpodResult.error || 'RunPod job failed');
+  }
+
+  return runpodResult;
+}
+
+async function pollRunpodStatus({ runpodUrls, apiKey, jobId }) {
+  let backoffMs = 500;
+  const maxBackoffMs = 10000;
+
+  while (true) {
+    await sleep(backoffMs);
+
+    const statusResponse = await fetch(`${runpodUrls.status}/${jobId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      }
+    });
+
+    if (!statusResponse.ok) {
+      const errorText = await statusResponse.text();
+      throw new Error(`RunPod status error: ${statusResponse.status} - ${errorText}`);
+    }
+
+    const statusResult = await statusResponse.json();
+
+    if (statusResult.status === 'COMPLETED') {
+      return statusResult;
+    }
+
+    if (statusResult.status === 'FAILED') {
+      throw new Error(statusResult.error || 'RunPod job failed');
+    }
+
+    backoffMs = Math.min(backoffMs * 2, maxBackoffMs);
+  }
+}
+
+async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }) {
+  let totalChunks = 0;
+  let totalBytes = 0;
+  let lastStreamPosition = 0;
+  let pollInterval = 500;
+  let isFinished = false;
+  const startTime = Date.now();
+  const timeoutMs = 300000;
+
+  while (!isFinished && (Date.now() - startTime) < timeoutMs) {
+    const streamResponse = await fetch(`${runpodUrls.stream}/${jobId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      }
+    });
+
+    if (!streamResponse.ok) {
+      const errorText = await streamResponse.text();
+      throw new Error(`RunPod stream error: ${streamResponse.status} - ${errorText}`);
+    }
+
+    const data = await streamResponse.json();
+    const streamData = data.stream || [];
+
+    if (streamData.length > lastStreamPosition) {
+      const newItems = streamData.slice(lastStreamPosition);
+
+      for (const item of newItems) {
+        if (item.status === 'streaming' && item.audio_chunk) {
+          const audioData = base64ToArrayBuffer(item.audio_chunk);
+          await writer.write(new Uint8Array(audioData));
+          totalChunks += 1;
+          totalBytes += audioData.byteLength;
+        } else if (item.status === 'complete') {
+          console.log(`[Tier 2][CF][${requestId}] RunPod signaled completion`);
+          isFinished = true;
+        } else if (item.error) {
+          console.error(`[Tier 2][CF][${requestId}] RunPod returned error in stream:`, item.error);
+        }
+      }
+
+      lastStreamPosition = streamData.length;
+      pollInterval = 500;
+    } else {
+      pollInterval = Math.min(pollInterval * 1.5, 5000);
+    }
+
+    if (data.status === 'COMPLETED' || data.status === 'FAILED') {
+      isFinished = true;
+    }
+
+    if (!isFinished) {
+      await sleep(pollInterval);
+    }
+  }
+
+  return { totalChunks, totalBytes };
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 /**
  * Load voice mappings from R2 bucket with caching
