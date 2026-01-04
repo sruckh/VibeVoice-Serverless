@@ -83,6 +83,10 @@ else
     source "$VENV_PATH/bin/activate"
 fi
 
+# Ensure LinaCodec is installed (force install/upgrade every boot)
+echo "Ensuring LinaCodec is installed..."
+pip install --upgrade --no-cache-dir git+https://github.com/ysharma3501/LinaCodec.git
+
 # Start handler
 echo "Starting VibeVoice handler..."
 exec python /workspace/vibevoice/handler.py
