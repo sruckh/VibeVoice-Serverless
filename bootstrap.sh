@@ -86,6 +86,8 @@ fi
 # Ensure LinaCodec is installed (force install/upgrade every boot)
 echo "Ensuring LinaCodec is installed..."
 pip install --upgrade --no-cache-dir git+https://github.com/ysharma3501/LinaCodec.git
+echo "Ensuring pyloudnorm is installed..."
+pip install --upgrade --no-cache-dir pyloudnorm>=0.1.0
 
 # Start handler
 echo "Starting VibeVoice handler..."

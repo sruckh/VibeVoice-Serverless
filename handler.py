@@ -38,7 +38,9 @@ def load_linacodec():
         raise RuntimeError("LinaCodec is not installed")
     if LINA_CODEC is not None:
         return LINA_CODEC
+    log.info("Loading LinaCodec model...")
     LINA_CODEC = LinaCodec()
+    log.info("LinaCodec loaded")
     return LINA_CODEC
 
 def to_numpy_audio(wav):
@@ -177,6 +179,10 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
 
     try:
         chunk_num = 0
+        log.info(
+            f"[Streaming] output_format={output_format}, linacodec_available={LINACODEC_AVAILABLE}, "
+            f"linacodec_decode={use_linacodec_decode}"
+        )
         if output_format == "linacodec_tokens" and not LINACODEC_AVAILABLE:
             raise RuntimeError("LinaCodec not available")
         for wav_chunk in inference_engine.generate_stream(
@@ -189,6 +195,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
             audio = to_numpy_audio(wav_chunk)
 
             if output_format == "linacodec_tokens":
+                log.info("[Streaming] Encoding chunk with LinaCodec tokens")
                 tokens, embedding = encode_to_linacodec(audio)
                 tokens_list = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                 embedding_list = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
@@ -206,6 +213,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
                 continue
 
             if use_linacodec_decode:
+                log.info("[Streaming] Encoding + decoding chunk via LinaCodec")
                 decoded = decode_with_linacodec(audio)
                 out_sample_rate = 48000
             else:
