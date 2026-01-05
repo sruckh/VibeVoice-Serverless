@@ -1,5 +1,6 @@
 import sys
 import os
+import gc
 import torch
 import numpy as np
 import logging
@@ -98,6 +99,12 @@ class VibeVoiceInference:
             return self.model
 
         log.info(f"Loading VibeVoice 7B model on {self.device}...")
+        
+        # Clear any existing GPU memory before loading
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+            gc.collect()
+        
         try:
             # Load processor
             self.processor = VibeVoiceProcessor.from_pretrained(config.MODEL_PATH)
@@ -105,28 +112,18 @@ class VibeVoiceInference:
             # Determine dtype and attention implementation
             if self.device == "cuda":
                 load_dtype = torch.bfloat16
-                attn_impl = "flash_attention_2"
-
-                # Try flash_attention_2 first, fallback to sdpa if it fails
-                try:
-                    log.info(f"Attempting to load model with flash_attention_2...")
-                    self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                        config.MODEL_PATH,
-                        torch_dtype=load_dtype,
-                        device_map="cuda",
-                        attn_implementation=attn_impl,
-                    )
-                    log.info(f"Model loaded successfully with flash_attention_2")
-                except Exception as e:
-                    log.warning(f"flash_attention_2 failed ({e}), falling back to sdpa")
-                    attn_impl = "sdpa"
-                    self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                        config.MODEL_PATH,
-                        torch_dtype=load_dtype,
-                        device_map="cuda",
-                        attn_implementation=attn_impl,
-                    )
-                    log.info(f"Model loaded successfully with sdpa fallback")
+                # Use sdpa directly - flash_attention_2 uses too much memory during loading
+                attn_impl = "sdpa"
+                
+                log.info(f"Loading model with sdpa (memory-efficient for 24GB GPUs)...")
+                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                    config.MODEL_PATH,
+                    torch_dtype=load_dtype,
+                    device_map="cuda",
+                    attn_implementation=attn_impl,
+                    low_cpu_mem_usage=True,  # Reduce CPU→GPU transfer memory spikes
+                )
+                log.info(f"Model loaded successfully with sdpa")
             else:
                 load_dtype = torch.float32
                 attn_impl = "sdpa"
@@ -137,6 +134,7 @@ class VibeVoiceInference:
                     torch_dtype=load_dtype,
                     device_map="cpu",
                     attn_implementation=attn_impl,
+                    low_cpu_mem_usage=True,
                 )
 
             self.model.eval()
@@ -146,6 +144,10 @@ class VibeVoiceInference:
             return self.model
         except Exception as e:
             log.error(f"Failed to load model: {e}")
+            # Clean up on failure
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+                gc.collect()
             raise
 
     def _smart_chunk_text(self, text: str, max_chars: int = None) -> list[str]:

@@ -4,7 +4,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     PYTHONUNBUFFERED=1 \
-    TORCH_HOME=/runpod-volume/vibevoice/torch_cache
+    TORCH_HOME=/runpod-volume/vibevoice/torch_cache \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.12 python3.12-venv python3.12-dev python3-pip \
