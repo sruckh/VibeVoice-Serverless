@@ -197,7 +197,7 @@ def upload_to_s3(audio_buffer, filename):
         return None
 
 def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_format):
-    """Generator for streaming audio or LinaCodec tokens."""
+    """Generator for streaming audio chunks (pcm_16 or mp3)."""
     sample_rate = config.DEFAULT_SAMPLE_RATE
     use_linacodec_decode = output_format in {"pcm_16", "mp3"} and LINACODEC_AVAILABLE
 
@@ -207,8 +207,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
             f"[Streaming] output_format={output_format}, linacodec_available={LINACODEC_AVAILABLE}, "
             f"linacodec_decode={use_linacodec_decode}"
         )
-        if output_format == "linacodec_tokens" and not LINACODEC_AVAILABLE:
-            raise RuntimeError("LinaCodec not available")
+
         for wav_chunk in inference_engine.generate_stream(
             text=text,
             speaker_name=speaker_name,
@@ -217,24 +216,6 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
         ):
             chunk_num += 1
             audio = to_numpy_audio(wav_chunk)
-
-            if output_format == "linacodec_tokens":
-                log.info("[Streaming] Encoding chunk with LinaCodec tokens")
-                tokens, embedding = encode_to_linacodec(audio, sample_rate)
-                tokens_list = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
-                embedding_list = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
-
-                yield {
-                    "status": "streaming",
-                    "chunk": chunk_num,
-                    "format": "linacodec_tokens",
-                    "tokens": tokens_list,
-                    "embedding": embedding_list,
-                    "sample_rate": 48000,
-                    "original_sample_rate": sample_rate,
-                    "num_tokens": len(tokens_list),
-                }
-                continue
 
             if use_linacodec_decode:
                 log.info("[Streaming] Encoding + decoding chunk via LinaCodec")
@@ -262,7 +243,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
 
         yield {
             "status": "complete",
-            "format": "linacodec_tokens" if output_format == "linacodec_tokens" else output_format,
+            "format": output_format,
             "message": "All chunks streamed",
         }
     except Exception as e:
@@ -360,21 +341,6 @@ def handler_batch(job, output_format):
                     log.warning(f"Audio too quiet to measure loudness ({loudness:.1f} LUFS), skipping normalization")
             except Exception as e:
                 log.warning(f"Loudness normalization failed: {e}, using unnormalized audio")
-
-        if output_format == "linacodec_tokens":
-            if not LINACODEC_AVAILABLE:
-                return {"error": "LinaCodec not available"}
-            tokens, embedding = encode_to_linacodec(wav, sample_rate)
-            tokens_list = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
-            embedding_list = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
-            return {
-                "status": "success",
-                "format": "linacodec_tokens",
-                "tokens": tokens_list,
-                "embedding": embedding_list,
-                "sample_rate": 48000,
-                "duration_sec": len(wav) / sample_rate,
-            }
 
         if output_format == "pcm_16":
             return {
