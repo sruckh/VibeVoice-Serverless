@@ -495,6 +495,11 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
   let isFinished = false;
   const startTime = Date.now();
   const timeoutMs = 300000;
+  
+  // Safety mechanism: if RunPod says COMPLETED but we haven't seen our "complete" message,
+  // we keep polling for a limited time to drain the stream.
+  let completedAt = null;
+  const DRAIN_TIMEOUT_MS = 10000; // Wait up to 10s for stream to catch up
 
   while (!isFinished && (Date.now() - startTime) < timeoutMs) {
     const streamResponse = await fetch(`${runpodUrls.stream}/${jobId}`, {
@@ -525,7 +530,7 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
           totalChunks += 1;
           totalBytes += audioData.byteLength;
         } else if (item.status === 'complete') {
-          console.log(`[Tier 2][CF][${requestId}] RunPod signaled completion`);
+          console.log(`[Tier 2][CF][${requestId}] RunPod signaled completion via stream`);
           isFinished = true;
         } else if (item.error) {
           console.error(`[Tier 2][CF][${requestId}] RunPod returned error in stream:`, item.error);
@@ -538,8 +543,22 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
       pollInterval = Math.min(pollInterval * 1.5, 5000);
     }
 
-    if (data.status === 'COMPLETED' || data.status === 'FAILED') {
+    // Check Job Status
+    if (data.status === 'FAILED') {
+      console.error(`[Tier 2][CF][${requestId}] RunPod job failed:`, data.error);
       isFinished = true;
+    } else if (data.status === 'COMPLETED') {
+      // If we haven't seen the stream completion message yet, start the drain timer
+      if (!isFinished) {
+        if (!completedAt) {
+          console.log(`[Tier 2][CF][${requestId}] RunPod status is COMPLETED, waiting for stream drain...`);
+          completedAt = Date.now();
+          pollInterval = 200; // Poll faster to finish up
+        } else if ((Date.now() - completedAt) > DRAIN_TIMEOUT_MS) {
+            console.warn(`[Tier 2][CF][${requestId}] Timed out waiting for stream drain`);
+            isFinished = true;
+        }
+      }
     }
 
     if (!isFinished) {
