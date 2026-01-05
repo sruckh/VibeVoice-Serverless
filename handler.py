@@ -23,27 +23,6 @@ log = logging.getLogger(__name__)
 # Initialize model loader
 inference_engine = VibeVoiceInference()
 
-try:
-    from linacodec.codec import LinaCodec
-    LINACODEC_AVAILABLE = True
-except Exception:
-    LinaCodec = None
-    LINACODEC_AVAILABLE = False
-
-LINA_CODEC = None
-
-def load_linacodec():
-    """Load and cache LinaCodec encoder/decoder."""
-    global LINA_CODEC
-    if not LINACODEC_AVAILABLE:
-        raise RuntimeError("LinaCodec is not installed")
-    if LINA_CODEC is not None:
-        return LINA_CODEC
-    log.info("Loading LinaCodec model...")
-    LINA_CODEC = LinaCodec()
-    log.info("LinaCodec loaded")
-    return LINA_CODEC
-
 def to_numpy_audio(wav):
     """Convert torch/numpy audio to 1D float32 numpy array."""
     if hasattr(wav, "cpu"):
@@ -53,44 +32,6 @@ def to_numpy_audio(wav):
     if len(wav.shape) > 1:
         wav = wav.squeeze()
     return wav.astype(np.float32)
-
-def encode_to_linacodec(audio, sample_rate):
-    """Encode audio to LinaCodec tokens and embedding using a temp WAV."""
-    lina = load_linacodec()
-
-    if hasattr(audio, "cpu"):
-        audio = audio.detach().cpu().numpy()
-    audio = np.asarray(audio, dtype=np.float32).squeeze()
-
-    if audio.ndim == 0:
-        audio = audio.reshape(1, 1)
-    elif audio.ndim == 1:
-        audio = audio.reshape(1, -1)
-    elif audio.ndim > 2:
-        while audio.ndim > 2:
-            audio = audio[0]
-        if audio.ndim == 1:
-            audio = audio.reshape(1, -1)
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
-        tmp_wav_path = tmp_wav.name
-
-    try:
-        sf.write(tmp_wav_path, audio.T, sample_rate, format="WAV")
-        tokens, embedding = lina.encode(tmp_wav_path)
-        return tokens, embedding
-    finally:
-        if os.path.exists(tmp_wav_path):
-            os.unlink(tmp_wav_path)
-
-def decode_with_linacodec(audio, sample_rate):
-    """Encode and decode audio via LinaCodec to get 48kHz output."""
-    lina = load_linacodec()
-    tokens, embedding = encode_to_linacodec(audio, sample_rate)
-    decoded = lina.decode(tokens, embedding)
-    if hasattr(decoded, "cpu"):
-        decoded = decoded.cpu().numpy()
-    return np.asarray(decoded, dtype=np.float32)
 
 def pcm16_base64(audio):
     """Convert float32 audio to base64-encoded PCM16."""
@@ -198,14 +139,12 @@ def upload_to_s3(audio_buffer, filename):
 
 def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_format, max_chunk_chars=None):
     """Generator for streaming audio chunks (pcm_16 or mp3)."""
-    sample_rate = config.DEFAULT_SAMPLE_RATE
-    use_linacodec_decode = output_format in {"pcm_16", "mp3"} and LINACODEC_AVAILABLE
+    sample_rate = config.DEFAULT_SAMPLE_RATE # 24000
 
     try:
         chunk_num = 0
         log.info(
-            f"[Streaming] output_format={output_format}, linacodec_available={LINACODEC_AVAILABLE}, "
-            f"linacodec_decode={use_linacodec_decode}, max_chunk_chars={max_chunk_chars}"
+            f"[Streaming] output_format={output_format}, sample_rate={sample_rate}, max_chunk_chars={max_chunk_chars}"
         )
 
         for wav_chunk in inference_engine.generate_stream(
@@ -217,14 +156,10 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
         ):
             chunk_num += 1
             audio = to_numpy_audio(wav_chunk)
-
-            if use_linacodec_decode:
-                log.info("[Streaming] Encoding + decoding chunk via LinaCodec")
-                decoded = decode_with_linacodec(audio, sample_rate)
-                out_sample_rate = 48000
-            else:
-                out_sample_rate = sample_rate
-                decoded = audio
+            
+            # Use raw 24kHz audio (No LinaCodec encoding/decoding/upsampling)
+            decoded = audio
+            out_sample_rate = sample_rate
 
             if output_format == "mp3":
                 mp3_bytes = encode_mp3_bytes(decoded, out_sample_rate)
@@ -287,12 +222,11 @@ def handler_stream(job_input, output_format):
         yield error
         return
 
-    if output_format not in {"pcm_16", "mp3", "linacodec_tokens"}:
+    if output_format not in {"pcm_16", "mp3"}:
         yield {"error": f"Unknown output_format: {output_format}"}
         return
 
     # Force smaller chunks for streaming to improve TTFB
-    # If environment variable is still 1000, we override it here for streaming
     max_chunk_chars = config.MAX_CHUNK_CHARS
     if max_chunk_chars > 200:
          log.info(f"Overriding MAX_CHUNK_CHARS ({max_chunk_chars}) to 200 for streaming")
@@ -317,9 +251,7 @@ def handler_batch(job, output_format):
     if error:
         return error
 
-    # Enforce strict chunking if config seems too loose (e.g. env var override)
-    # The user reported 2000 chars becoming 2 chunks (implying 1000 limit)
-    # We want to enforce ~200 chars for better stability/quality even in batch
+    # Enforce strict chunking if config seems too loose
     max_chunk_chars = config.MAX_CHUNK_CHARS
     if max_chunk_chars > 200:
          log.info(f"Overriding MAX_CHUNK_CHARS ({max_chunk_chars}) to 200 for batch")
