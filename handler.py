@@ -233,19 +233,23 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
                 audio_b64 = pcm16_base64(decoded)
                 fmt = "pcm_16"
 
-            yield {
+            chunk_data = {
                 "status": "streaming",
                 "chunk": chunk_num,
                 "format": fmt,
                 "audio_chunk": audio_b64,
                 "sample_rate": out_sample_rate,
             }
+            log.info(f"[Streaming] Yielding chunk {chunk_num}: {len(audio_b64)} bytes base64, format={fmt}")
+            yield chunk_data
 
-        yield {
+        completion_data = {
             "status": "complete",
             "format": output_format,
             "message": "All chunks streamed",
         }
+        log.info(f"[Streaming] Yielding completion: {chunk_num} total chunks")
+        yield completion_data
     except Exception as e:
         log.error(f"Streaming failed: {e}")
         yield {"error": str(e)}
