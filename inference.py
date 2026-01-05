@@ -151,7 +151,7 @@ class VibeVoiceInference:
             raise
 
     def _smart_chunk_text(self, text: str, max_chars: int = None) -> list[str]:
-        """Split text into chunks at natural boundaries (sentences, clauses)"""
+        """Split text into chunks at natural boundaries (sentences, clauses), preserving punctuation."""
         if max_chars is None:
             max_chars = self.max_chunk_chars
 
@@ -159,69 +159,87 @@ class VibeVoiceInference:
             return [text]
 
         chunks = []
+        # Boundaries include the space to detect them, but we want to keep the punctuation.
+        # We will split AFTER the boundary.
         sentence_endings = ['. ', '! ', '? ', '.\n', '!\n', '?\n']
         clause_boundaries = [', ', '; ', ': ', ' - ', ' — ']
 
-        def split_at_boundaries(text_segment: str, boundaries: list[str]) -> list[str]:
+        def split_keep_boundaries(text_segment: str, boundaries: list[str]) -> list[str]:
             parts = []
             current = ""
             i = 0
             while i < len(text_segment):
-                current += text_segment[i]
+                match_found = False
                 for boundary in boundaries:
                     if text_segment[i:i+len(boundary)] == boundary:
-                        if len(current) > 0:
-                            parts.append(current)
-                            current = ""
-                        i += len(boundary) - 1
+                        # Include the punctuation (first char of boundary), but maybe not the trailing space?
+                        # Actually, keeping the space is safer for concatenation, but we strip later.
+                        # Let's keep the whole boundary for now.
+                        current += boundary
+                        parts.append(current)
+                        current = ""
+                        i += len(boundary)
+                        match_found = True
                         break
-                i += 1
+                
+                if not match_found:
+                    current += text_segment[i]
+                    i += 1
+            
             if current:
                 parts.append(current)
             return parts
 
-        segments = split_at_boundaries(text, sentence_endings)
+        # Level 1: Sentences
+        segments = split_keep_boundaries(text, sentence_endings)
         current_chunk = ""
 
         for segment in segments:
-            segment = segment.strip()
-            if not segment:
-                continue
-
+            # We don't strip yet, we want to preserve spacing between segments if we merge them
+            # But we check length based on stripped version? No, rough length.
+            
             if len(segment) > max_chars:
+                # This segment alone is too big. Flush current buffer first.
                 if current_chunk:
                     chunks.append(current_chunk.strip())
                     current_chunk = ""
 
-                clauses = split_at_boundaries(segment, clause_boundaries)
+                # Level 2: Clauses
+                clauses = split_keep_boundaries(segment, clause_boundaries)
                 for clause in clauses:
-                    clause = clause.strip()
-                    if not clause:
-                        continue
-
                     if len(clause) > max_chars:
+                        # Flush buffer
                         if current_chunk:
                             chunks.append(current_chunk.strip())
                             current_chunk = ""
-
+                        
+                        # Level 3: Words (Hard split)
                         words = clause.split()
                         for word in words:
+                            # Add space back if we are appending
+                            prefix = " " if current_chunk else ""
                             if len(current_chunk) + len(word) + 1 <= max_chars:
-                                current_chunk += " " + word if current_chunk else word
+                                current_chunk += prefix + word
                             else:
                                 if current_chunk:
                                     chunks.append(current_chunk.strip())
                                 current_chunk = word
                     else:
-                        if len(current_chunk) + len(clause) + 1 <= max_chars:
-                            current_chunk += " " + clause if current_chunk else clause
+                        # Clause fits, but does it fit with current_chunk?
+                        # Use a heuristic for spacing
+                        prefix = "" if not current_chunk or current_chunk.endswith(" ") else " "
+                        
+                        if len(current_chunk) + len(clause) + len(prefix) <= max_chars:
+                            current_chunk += prefix + clause
                         else:
                             if current_chunk:
                                 chunks.append(current_chunk.strip())
                             current_chunk = clause
             else:
-                if len(current_chunk) + len(segment) + 1 <= max_chars:
-                    current_chunk += " " + segment if current_chunk else segment
+                # Segment fits
+                prefix = "" if not current_chunk or current_chunk.endswith(" ") else " "
+                if len(current_chunk) + len(segment) + len(prefix) <= max_chars:
+                    current_chunk += prefix + segment
                 else:
                     if current_chunk:
                         chunks.append(current_chunk.strip())
@@ -230,7 +248,14 @@ class VibeVoiceInference:
         if current_chunk:
             chunks.append(current_chunk.strip())
 
-        chunks = [c for c in chunks if c.strip()]
+        # Final cleanup and merge short chunks
+        final_chunks = []
+        for c in chunks:
+            c = c.strip()
+            if c:
+                final_chunks.append(c)
+        
+        chunks = final_chunks
 
         min_last_chunk_chars = min(
             getattr(config, "MIN_LAST_CHUNK_CHARS", 0),
