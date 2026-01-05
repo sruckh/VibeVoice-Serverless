@@ -6,6 +6,7 @@ import numpy as np
 import logging
 import soundfile as sf
 import tempfile
+import random
 from pathlib import Path
 
 # Add VibeVoice to path (it's cloned at runtime in bootstrap.sh)
@@ -151,7 +152,7 @@ class VibeVoiceInference:
             raise
 
     def _smart_chunk_text(self, text: str, max_chars: int = None) -> list[str]:
-        """Split text into chunks at natural boundaries (sentences, clauses), preserving punctuation."""
+        """Split text into chunks only at sentence boundaries to preserve prosody."""
         if max_chars is None:
             max_chars = self.max_chunk_chars
 
@@ -159,10 +160,8 @@ class VibeVoiceInference:
             return [text]
 
         chunks = []
-        # Boundaries include the space to detect them, but we want to keep the punctuation.
-        # We will split AFTER the boundary.
+        # ONLY split at sentence endings. Splitting at commas (clauses) destroys VibeVoice prosody.
         sentence_endings = ['. ', '! ', '? ', '.\n', '!\n', '?\n']
-        clause_boundaries = [', ', '; ', ': ', ' - ', ' — ']
 
         def split_keep_boundaries(text_segment: str, boundaries: list[str]) -> list[str]:
             parts = []
@@ -172,9 +171,6 @@ class VibeVoiceInference:
                 match_found = False
                 for boundary in boundaries:
                     if text_segment[i:i+len(boundary)] == boundary:
-                        # Include the punctuation (first char of boundary), but maybe not the trailing space?
-                        # Actually, keeping the space is safer for concatenation, but we strip later.
-                        # Let's keep the whole boundary for now.
                         current += boundary
                         parts.append(current)
                         current = ""
@@ -190,53 +186,30 @@ class VibeVoiceInference:
                 parts.append(current)
             return parts
 
-        # Level 1: Sentences
+        # Split into sentences
         segments = split_keep_boundaries(text, sentence_endings)
         current_chunk = ""
 
         for segment in segments:
-            # We don't strip yet, we want to preserve spacing between segments if we merge them
-            # But we check length based on stripped version? No, rough length.
-            
             if len(segment) > max_chars:
-                # This segment alone is too big. Flush current buffer first.
+                # Flush existing buffer
                 if current_chunk:
                     chunks.append(current_chunk.strip())
                     current_chunk = ""
 
-                # Level 2: Clauses
-                clauses = split_keep_boundaries(segment, clause_boundaries)
-                for clause in clauses:
-                    if len(clause) > max_chars:
-                        # Flush buffer
+                # Sentence itself is too long. This is rare (>800 chars).
+                # Fall back to word-level split as a last resort.
+                words = segment.split()
+                for word in words:
+                    prefix = " " if current_chunk else ""
+                    if len(current_chunk) + len(word) + 1 <= max_chars:
+                        current_chunk += prefix + word
+                    else:
                         if current_chunk:
                             chunks.append(current_chunk.strip())
-                            current_chunk = ""
-                        
-                        # Level 3: Words (Hard split)
-                        words = clause.split()
-                        for word in words:
-                            # Add space back if we are appending
-                            prefix = " " if current_chunk else ""
-                            if len(current_chunk) + len(word) + 1 <= max_chars:
-                                current_chunk += prefix + word
-                            else:
-                                if current_chunk:
-                                    chunks.append(current_chunk.strip())
-                                current_chunk = word
-                    else:
-                        # Clause fits, but does it fit with current_chunk?
-                        # Use a heuristic for spacing
-                        prefix = "" if not current_chunk or current_chunk.endswith(" ") else " "
-                        
-                        if len(current_chunk) + len(clause) + len(prefix) <= max_chars:
-                            current_chunk += prefix + clause
-                        else:
-                            if current_chunk:
-                                chunks.append(current_chunk.strip())
-                            current_chunk = clause
+                        current_chunk = word
             else:
-                # Segment fits
+                # Segment fits. Try to group sentences up to max_chars.
                 prefix = "" if not current_chunk or current_chunk.endswith(" ") else " "
                 if len(current_chunk) + len(segment) + len(prefix) <= max_chars:
                     current_chunk += prefix + segment
@@ -248,35 +221,22 @@ class VibeVoiceInference:
         if current_chunk:
             chunks.append(current_chunk.strip())
 
-        # Final cleanup and merge short chunks
-        final_chunks = []
-        for c in chunks:
-            c = c.strip()
-            if c:
-                final_chunks.append(c)
-        
-        chunks = final_chunks
-
-        min_last_chunk_chars = min(
-            getattr(config, "MIN_LAST_CHUNK_CHARS", 0),
-            max_chars,
-        )
-        if len(chunks) > 1 and min_last_chunk_chars > 0:
-            last_len = len(chunks[-1])
-            if last_len < min_last_chunk_chars:
-                chunks[-2] = f"{chunks[-2]} {chunks[-1]}".strip()
-                chunks.pop()
-                log.info(
-                    "Last chunk too short (%s chars); merged into previous (min %s).",
-                    last_len,
-                    min_last_chunk_chars,
-                )
+        # Cleanup
+        chunks = [c.strip() for c in chunks if c.strip()]
 
         if not chunks:
             return [text]
 
-        log.info(f"Split text into {len(chunks)} chunks (max {max_chars} chars each)")
+        log.info(f"Split text into {len(chunks)} chunks (max {max_chars} chars each, sentence-level only)")
         return chunks
+
+    def _set_seed(self, seed: int) -> None:
+        """Helper to set seed across all libraries for consistency"""
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
     def generate(
         self,
@@ -294,12 +254,6 @@ class VibeVoiceInference:
 
         session_seed = int.from_bytes(os.urandom(4), "little")
         log.info(f"Using session seed: {session_seed}")
-
-        def _set_seed(seed: int) -> None:
-            torch.manual_seed(seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(seed)
-            np.random.seed(seed)
 
         # Get voice path
         speaker_name = speaker_name or config.DEFAULT_SPEAKER
@@ -319,7 +273,7 @@ class VibeVoiceInference:
                     f.write(formatted_text)
 
                 with torch.no_grad():
-                    _set_seed(session_seed)
+                    self._set_seed(session_seed)
                     # voice_samples must be a list of lists: [[path1, path2, ...]]
                     inputs = self.processor(
                         text=[formatted_text],
@@ -372,7 +326,7 @@ class VibeVoiceInference:
                     f.write(formatted_chunk)
                     
                 with torch.no_grad():
-                    _set_seed(session_seed)
+                    self._set_seed(session_seed)
                     inputs = self.processor(
                         text=[formatted_chunk],
                         voice_samples=[[voice_path]],
@@ -436,12 +390,6 @@ class VibeVoiceInference:
         session_seed = int.from_bytes(os.urandom(4), "little")
         log.info(f"Using session seed: {session_seed}")
 
-        def _set_seed(seed: int) -> None:
-            torch.manual_seed(seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(seed)
-            np.random.seed(seed)
-
         # Get voice path
         speaker_name = speaker_name or config.DEFAULT_SPEAKER
         voice_path = self.voice_mapper.get_voice_path(speaker_name)
@@ -466,7 +414,7 @@ class VibeVoiceInference:
                     f.write(formatted_chunk)
 
                 with torch.no_grad():
-                    _set_seed(session_seed)
+                    self._set_seed(session_seed)
                     inputs = self.processor(
                         text=[formatted_chunk],
                         voice_samples=[[voice_path]],
