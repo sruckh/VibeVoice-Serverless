@@ -70,6 +70,34 @@ def encode_mp3_bytes(audio, sample_rate):
         log.error(f"FFmpeg encoding failed: {e}")
         return b""
 
+def resample_pcm_bytes(audio_bytes, src_rate, dst_rate=48000):
+    """Resample PCM bytes using ffmpeg (e.g. 24k -> 48k)."""
+    if src_rate == dst_rate:
+        return audio_bytes
+
+    try:
+        process = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-y",
+                "-f", "s16le",
+                "-ar", str(src_rate),
+                "-ac", "1",
+                "-i", "pipe:0",
+                "-f", "s16le",
+                "-ar", str(dst_rate),
+                "pipe:1",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        out_bytes, _ = process.communicate(input=audio_bytes)
+        return out_bytes
+    except Exception as e:
+        log.error(f"FFmpeg resampling failed: {e}")
+        return audio_bytes
+
 def cleanup_old_files(directory, days=2):
     """Delete files older than specified days from directory"""
     try:
@@ -139,12 +167,13 @@ def upload_to_s3(audio_buffer, filename):
 
 def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_format, max_chunk_chars=None):
     """Generator for streaming audio chunks (pcm_16 or mp3)."""
-    sample_rate = config.DEFAULT_SAMPLE_RATE # 24000
+    src_rate = config.DEFAULT_SAMPLE_RATE # 24000
+    dst_rate = 48000 # Upsample to 48kHz to match client expectations
 
     try:
         chunk_num = 0
         log.info(
-            f"[Streaming] output_format={output_format}, sample_rate={sample_rate}, max_chunk_chars={max_chunk_chars}"
+            f"[Streaming] output_format={output_format}, src_rate={src_rate}, dst_rate={dst_rate}, max_chunk_chars={max_chunk_chars}"
         )
 
         for wav_chunk in inference_engine.generate_stream(
@@ -157,16 +186,20 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
             chunk_num += 1
             audio = to_numpy_audio(wav_chunk)
             
-            # Use raw 24kHz audio (No LinaCodec encoding/decoding/upsampling)
-            decoded = audio
-            out_sample_rate = sample_rate
-
             if output_format == "mp3":
-                mp3_bytes = encode_mp3_bytes(decoded, out_sample_rate)
+                # FFmpeg handles resampling internally if we specify the rate
+                mp3_bytes = encode_mp3_bytes(audio, dst_rate)
                 audio_b64 = base64.b64encode(mp3_bytes).decode("utf-8")
                 fmt = "mp3"
             else:
-                audio_b64 = pcm16_base64(decoded)
+                # PCM: Must resample explicitly to 48kHz
+                # Convert to bytes first
+                audio = np.clip(audio, -1.0, 1.0)
+                pcm16 = (audio * 32767.0).astype(np.int16)
+                raw_bytes = pcm16.tobytes()
+                
+                resampled_bytes = resample_pcm_bytes(raw_bytes, src_rate, dst_rate)
+                audio_b64 = base64.b64encode(resampled_bytes).decode("utf-8")
                 fmt = "pcm_16"
 
             yield {
@@ -174,7 +207,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
                 "chunk": chunk_num,
                 "format": fmt,
                 "audio_chunk": audio_b64,
-                "sample_rate": out_sample_rate,
+                "sample_rate": dst_rate,
             }
 
         yield {
@@ -226,11 +259,11 @@ def handler_stream(job_input, output_format):
         yield {"error": f"Unknown output_format: {output_format}"}
         return
 
-    # Force smaller chunks for streaming to improve TTFB
+    # Increase chunk size for better quality and stability
     max_chunk_chars = config.MAX_CHUNK_CHARS
-    if max_chunk_chars > 200:
-         log.info(f"Overriding MAX_CHUNK_CHARS ({max_chunk_chars}) to 200 for streaming")
-         max_chunk_chars = 200
+    if max_chunk_chars < 500:
+         log.info(f"Bumping MAX_CHUNK_CHARS ({max_chunk_chars}) to 500 for better prosody")
+         max_chunk_chars = 500
 
     yield from stream_audio_chunks(
         text=params["text"],
@@ -251,11 +284,8 @@ def handler_batch(job, output_format):
     if error:
         return error
 
-    # Enforce strict chunking if config seems too loose
-    max_chunk_chars = config.MAX_CHUNK_CHARS
-    if max_chunk_chars > 200:
-         log.info(f"Overriding MAX_CHUNK_CHARS ({max_chunk_chars}) to 200 for batch")
-         max_chunk_chars = 200
+    # Use larger chunks for batch mode to preserve quality
+    max_chunk_chars = 1000
 
     try:
         wav = inference_engine.generate(
@@ -269,16 +299,16 @@ def handler_batch(job, output_format):
         if wav is None:
             return {"error": "Failed to generate audio"}
 
-        sample_rate = config.DEFAULT_SAMPLE_RATE
-        log.info(f"Using sample rate: {sample_rate}")
+        src_rate = config.DEFAULT_SAMPLE_RATE # 24000
+        dst_rate = 48000 # Upsample to 48kHz
+        log.info(f"Upsampling batch audio from {src_rate} to {dst_rate}")
 
-        log.info("Converting audio tensor to numpy...")
         wav = to_numpy_audio(wav)
 
         if output_format != "linacodec_tokens":
             try:
                 import pyloudnorm as pyln
-                meter = pyln.Meter(sample_rate)
+                meter = pyln.Meter(src_rate)
                 loudness = meter.integrated_loudness(wav)
 
                 target_loudness = -20.0
@@ -292,17 +322,23 @@ def handler_batch(job, output_format):
                 log.warning(f"Loudness normalization failed: {e}, using unnormalized audio")
 
         if output_format == "pcm_16":
+            # PCM: Must resample explicitly to 48kHz
+            wav = np.clip(wav, -1.0, 1.0)
+            pcm16 = (wav * 32767.0).astype(np.int16)
+            resampled_bytes = resample_pcm_bytes(pcm16.tobytes(), src_rate, dst_rate)
+            
             return {
                 "status": "success",
                 "format": "pcm_16",
-                "sample_rate": sample_rate,
-                "duration_sec": len(wav) / sample_rate,
-                "audio_base64": pcm16_base64(wav),
+                "sample_rate": dst_rate,
+                "duration_sec": len(wav) / src_rate,
+                "audio_base64": base64.b64encode(resampled_bytes).decode("utf-8"),
             }
 
+        # MP3 handling
         audio_buffer = io.BytesIO()
-        log.info(f"Writing audio to buffer (shape: {wav.shape})...")
-        sf.write(audio_buffer, wav, sample_rate, format="MP3")
+        mp3_bytes = encode_mp3_bytes(wav, dst_rate)
+        audio_buffer.write(mp3_bytes)
         audio_buffer.seek(0)
 
         filename = f"{params['session_id']}_{uuid.uuid4()}.mp3"
@@ -321,8 +357,8 @@ def handler_batch(job, output_format):
 
         response = {
             "status": "success",
-            "sample_rate": sample_rate,
-            "duration_sec": len(wav) / sample_rate,
+            "sample_rate": dst_rate,
+            "duration_sec": len(wav) / src_rate,
         }
 
         if s3_url:
