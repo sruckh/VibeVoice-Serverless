@@ -39,8 +39,8 @@ def pcm16_base64(audio):
     pcm16 = (audio * 32767.0).astype(np.int16)
     return base64.b64encode(pcm16.tobytes()).decode("utf-8")
 
-def encode_mp3_bytes(audio, sample_rate):
-    """Encode float32 or int16 mono audio to MP3 bytes using ffmpeg."""
+def encode_mp3_bytes(audio, src_rate, dst_rate=48000):
+    """Encode float32 or int16 mono audio to MP3 bytes using ffmpeg, with resampling."""
     if audio.dtype != np.int16:
         audio = np.clip(audio, -1.0, 1.0)
         audio = (audio * 32767.0).astype(np.int16)
@@ -53,10 +53,11 @@ def encode_mp3_bytes(audio, sample_rate):
                 "ffmpeg",
                 "-y",
                 "-f", "s16le",
-                "-ar", str(sample_rate),
+                "-ar", str(src_rate),  # Input sample rate
                 "-ac", "1",
                 "-i", "pipe:0",
                 "-f", "mp3",
+                "-ar", str(dst_rate),  # Output sample rate
                 "-b:a", "192k",
                 "pipe:1",
             ],
@@ -187,13 +188,12 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
             audio = to_numpy_audio(wav_chunk)
             
             if output_format == "mp3":
-                # FFmpeg handles resampling internally if we specify the rate
-                mp3_bytes = encode_mp3_bytes(audio, dst_rate)
+                # FFmpeg handles resampling internally
+                mp3_bytes = encode_mp3_bytes(audio, src_rate, dst_rate)
                 audio_b64 = base64.b64encode(mp3_bytes).decode("utf-8")
                 fmt = "mp3"
             else:
                 # PCM: Must resample explicitly to 48kHz
-                # Convert to bytes first
                 audio = np.clip(audio, -1.0, 1.0)
                 pcm16 = (audio * 32767.0).astype(np.int16)
                 raw_bytes = pcm16.tobytes()
@@ -259,11 +259,14 @@ def handler_stream(job_input, output_format):
         yield {"error": f"Unknown output_format: {output_format}"}
         return
 
-    # Increase chunk size for better quality and stability
+    # Force safe chunk size to avoid RunPod payload limits (4MB)
+    # 350 chars ~ 15-20s audio. At 48kHz 16-bit mono:
+    # 20s * 48000 * 2 bytes = 1.92 MB. Safe.
+    # 500 chars was pushing ~3MB which risks overhead limits.
     max_chunk_chars = config.MAX_CHUNK_CHARS
-    if max_chunk_chars < 500:
-         log.info(f"Bumping MAX_CHUNK_CHARS ({max_chunk_chars}) to 500 for better prosody")
-         max_chunk_chars = 500
+    if max_chunk_chars > 350:
+         log.info(f"Overriding MAX_CHUNK_CHARS ({max_chunk_chars}) to 350 for streaming safety")
+         max_chunk_chars = 350
 
     yield from stream_audio_chunks(
         text=params["text"],
@@ -337,7 +340,7 @@ def handler_batch(job, output_format):
 
         # MP3 handling
         audio_buffer = io.BytesIO()
-        mp3_bytes = encode_mp3_bytes(wav, dst_rate)
+        mp3_bytes = encode_mp3_bytes(wav, src_rate, dst_rate)
         audio_buffer.write(mp3_bytes)
         audio_buffer.seek(0)
 
