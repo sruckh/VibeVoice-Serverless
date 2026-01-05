@@ -137,70 +137,23 @@ export default {
         return openaiError('RunPod API key not configured', 'server_error', null);
       }
 
-      // Translate to RunPod custom format
-      const runpodRequest = {
-        input: {
-          text: input,
-          speaker_name: speakerName,
-          cfg_scale: 1.3,
-          disable_prefill: false,
-          output_format: response_format === 'pcm' ? 'pcm_16' : 'mp3'
-        }
-      };
-
+      // BATCH MODE: Use streaming logic + accumulation to avoid RunPod payload limits
+      // We force 'stream=true' in the RunPod request, even though this is a batch OpenAI request
       const runpodUrls = buildRunpodUrls(env.RUNPOD_URL);
-      const runpodResult = await callRunpodRunsync({
+      
+      const audioBytes = await handleBatchViaStreaming({
         runpodUrls,
         apiKey: env.RUNPOD_API_KEY,
-        runpodRequest
+        text: input,
+        speakerName,
+        outputFormat: response_format === 'pcm' ? 'pcm_16' : 'mp3'
       });
-
-      // Extract output from RunPod response
-      let output = runpodResult.output || runpodResult;
-      if (Array.isArray(output) && output.length === 1) {
-        output = output[0];
-      }
-
-      // Check for errors in response
-      if (output.error || runpodResult.error) {
-        const error = output.error || runpodResult.error;
-        console.error('RunPod returned error:', error);
-        return openaiError(error, 'server_error', null);
-      }
-
-      // Extract audio data (S3 URL or base64)
-      let audioBytes;
-      let contentType = 'audio/mpeg';
-
-      if (output.audio_url) {
-        // Fetch audio from S3 URL
-        console.log('Fetching audio from S3:', output.audio_url);
-        const s3Response = await fetch(output.audio_url);
-
-        if (!s3Response.ok) {
-          console.error('Failed to fetch from S3:', s3Response.status);
-          return openaiError('Failed to fetch audio from S3', 'server_error', null);
-        }
-
-        audioBytes = await s3Response.arrayBuffer();
-        contentType = s3Response.headers.get('Content-Type') || 'audio/mpeg';
-        console.log('S3 Content-Type:', contentType);
-
-      } else if (output.audio_base64 || output.audio) {
-        // Decode base64 to binary
-        const audioBase64 = output.audio_base64 || output.audio;
-        audioBytes = base64ToArrayBuffer(audioBase64);
-
-      } else {
-        console.error('No audio data in RunPod response:', runpodResult);
-        return openaiError('No audio data returned from RunPod', 'server_error', null);
-      }
 
       // Return raw audio bytes (OpenAI format)
       return new Response(audioBytes, {
         status: 200,
         headers: {
-          'Content-Type': contentType,
+          'Content-Type': response_format === 'pcm' ? 'audio/pcm' : 'audio/mpeg',
           'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'no-cache'
         }
@@ -291,6 +244,73 @@ async function handleStreamingTTS(request, env, ctx) {
     console.error(`[Tier 2][CF] Error:`, error);
     return errorResponse(error.message, 500);
   }
+}
+
+/**
+ * Execute a batch request by streaming and accumulating chunks
+ */
+async function handleBatchViaStreaming({ runpodUrls, apiKey, text, speakerName, outputFormat }) {
+  const requestId = crypto.randomUUID();
+  console.log(`[Tier 2][CF][${requestId}] Starting batch-via-streaming for ${text.length} chars`);
+
+  // Submit job
+  const runpodResponse = await fetch(runpodUrls.run, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      input: {
+        text,
+        speaker_name: speakerName,
+        stream: true, // Always stream from RunPod to avoid payload limits
+        output_format: outputFormat
+      }
+    })
+  });
+
+  if (!runpodResponse.ok) {
+    const errorText = await runpodResponse.text();
+    throw new Error(`RunPod submit failed: ${runpodResponse.status} - ${errorText}`);
+  }
+
+  const jobData = await runpodResponse.json();
+  const jobId = extractRunpodJobId(jobData);
+  if (!jobId) {
+    throw new Error(`RunPod did not return a job id: ${JSON.stringify(jobData)}`);
+  }
+
+  // Accumulator
+  const chunks = [];
+  const writer = {
+    write(chunk) {
+      chunks.push(chunk);
+      return Promise.resolve();
+    },
+    close() { return Promise.resolve(); }
+  };
+
+  // Poll and accumulate
+  await pollRunpodStream({
+    runpodUrls,
+    apiKey,
+    jobId,
+    writer,
+    requestId
+  });
+
+  // Concatenate chunks
+  const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  console.log(`[Tier 2][CF][${requestId}] Batch complete: ${totalLength} bytes assembled`);
+  return result.buffer;
 }
 
 /**
@@ -490,7 +510,7 @@ async function pollRunpodStatus({ runpodUrls, apiKey, jobId }) {
 async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }) {
   let totalChunks = 0;
   let totalBytes = 0;
-  let lastStreamPosition = 0;
+  let maxChunkProcessed = 0; // Track by ID instead of array index
   let pollInterval = 500;
   let isFinished = false;
   const startTime = Date.now();
@@ -517,31 +537,40 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
     const data = await streamResponse.json();
     const streamData = data.stream || [];
 
-    if (streamData.length > lastStreamPosition) {
-      const newItems = streamData.slice(lastStreamPosition);
+    // Iterate through ALL available items to check for new chunks
+    // This is robust against both accumulated lists and partial updates
+    for (const rawItem of streamData) {
+      // RunPod sometimes wraps the yield in an 'output' property
+      const item = rawItem.output || rawItem;
 
-      for (const rawItem of newItems) {
-        // RunPod sometimes wraps the yield in an 'output' property
-        const item = rawItem.output || rawItem;
-
-        if (item.status === 'streaming' && item.audio_chunk) {
+      if (item.status === 'streaming' && item.audio_chunk) {
+        // Only process if we haven't seen this chunk number yet
+        // If chunk ID is missing (shouldn't happen), fall back to processing
+        const chunkId = item.chunk || (maxChunkProcessed + 1);
+        
+        if (chunkId > maxChunkProcessed) {
+          console.log(`[Tier 2][CF][${requestId}] Processing chunk ${chunkId}`);
           const audioData = base64ToArrayBuffer(item.audio_chunk);
           await writer.write(new Uint8Array(audioData));
           totalChunks += 1;
           totalBytes += audioData.byteLength;
-        } else if (item.status === 'complete') {
+          maxChunkProcessed = chunkId;
+          
+          // Reset poll interval on activity
+          pollInterval = 500;
+        }
+      } else if (item.status === 'complete') {
+        if (!isFinished) {
           console.log(`[Tier 2][CF][${requestId}] RunPod signaled completion via stream`);
           isFinished = true;
-        } else if (item.error) {
-          console.error(`[Tier 2][CF][${requestId}] RunPod returned error in stream:`, item.error);
         }
+      } else if (item.error) {
+        console.error(`[Tier 2][CF][${requestId}] RunPod returned error in stream:`, item.error);
       }
-
-      lastStreamPosition = streamData.length;
-      pollInterval = 500;
-    } else {
-      pollInterval = Math.min(pollInterval * 1.5, 5000);
     }
+
+    // Adaptive polling: slow down if no new data
+    pollInterval = Math.min(pollInterval * 1.5, 5000);
 
     // Check Job Status
     if (data.status === 'FAILED') {
