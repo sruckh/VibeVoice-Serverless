@@ -271,7 +271,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
 
 def _extract_and_validate_params(job_input):
     """Extract and validate parameters from job input."""
-    text = job_input.get("text")
+    text = job_input.get("text") or job_input.get("input")
     if not text or not text.strip():
         return None, {"error": "Missing or empty 'text' parameter"}
 
@@ -437,11 +437,9 @@ def handler(job):
 
     if stream:
         log.info(f"[Handler] Streaming mode requested: format={output_format}")
-        yield from handler_stream(job_input, output_format)
-        return
+        return runpod.stream(handler_stream(job_input, output_format))
 
-    result = handler_batch(job, output_format)
-    yield result
+    return handler_batch(job, output_format)
 
 if __name__ == "__main__":
     runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})
