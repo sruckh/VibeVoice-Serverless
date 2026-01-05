@@ -32,8 +32,8 @@ AUDIO_PROMPTS_DIR = f"{VIBEVOICE_DIR}/demo/voices"  # Voice reference audio
 # Application Configuration
 MAX_TEXT_LENGTH = int(os.environ.get("MAX_TEXT_LENGTH", "2000"))
 DEFAULT_SAMPLE_RATE = int(os.environ.get("DEFAULT_SAMPLE_RATE", "24000"))
-MAX_CHUNK_CHARS = int(os.environ.get("MAX_CHUNK_CHARS", "1000"))
-MIN_LAST_CHUNK_CHARS = int(os.environ.get("MIN_LAST_CHUNK_CHARS", "150"))
+MAX_CHUNK_CHARS = int(os.environ.get("MAX_CHUNK_CHARS", "200"))  # Reduced for streaming: ~6sec audio, ~200KB base64
+MIN_LAST_CHUNK_CHARS = int(os.environ.get("MIN_LAST_CHUNK_CHARS", "50"))  # Proportionally reduced
 CHUNK_SILENCE_MS = int(os.environ.get("CHUNK_SILENCE_MS", "40"))
 
 # Audio configuration
