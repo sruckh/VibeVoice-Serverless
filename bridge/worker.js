@@ -510,7 +510,11 @@ async function pollRunpodStatus({ runpodUrls, apiKey, jobId }) {
 async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }) {
   let totalChunks = 0;
   let totalBytes = 0;
-  let maxChunkProcessed = 0; // Track by ID instead of array index
+  
+  // Robust ordered processing state
+  let nextExpectedChunk = 1;
+  const chunkBuffer = new Map(); // id -> uint8array
+  
   let pollInterval = 500;
   let isFinished = false;
   const startTime = Date.now();
@@ -537,28 +541,20 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
     const data = await streamResponse.json();
     const streamData = data.stream || [];
 
-    // Iterate through ALL available items to check for new chunks
-    // This is robust against both accumulated lists and partial updates
+    // 1. Ingest all available chunks into the buffer
     for (const rawItem of streamData) {
       // RunPod sometimes wraps the yield in an 'output' property
       const item = rawItem.output || rawItem;
 
       if (item.status === 'streaming' && item.audio_chunk) {
-        // Only process if we haven't seen this chunk number yet
-        // If chunk ID is missing (shouldn't happen), fall back to processing
-        const chunkId = item.chunk || (maxChunkProcessed + 1);
+        const chunkId = item.chunk;
         
-        if (chunkId > maxChunkProcessed) {
-          console.log(`[Tier 2][CF][${requestId}] Processing chunk ${chunkId}`);
-          const audioData = base64ToArrayBuffer(item.audio_chunk);
-          await writer.write(new Uint8Array(audioData));
-          totalChunks += 1;
-          totalBytes += audioData.byteLength;
-          maxChunkProcessed = chunkId;
-          
-          // Reset poll interval on activity
-          pollInterval = 500;
-        }
+        // If chunkId is present and valid (>= nextExpectedChunk) and not already buffered
+        if (chunkId && chunkId >= nextExpectedChunk && !chunkBuffer.has(chunkId)) {
+          console.log(`[Tier 2][CF][${requestId}] Buffered chunk ${chunkId}`);
+          chunkBuffer.set(chunkId, base64ToArrayBuffer(item.audio_chunk));
+        } 
+        // Fallback for items without ID? (Shouldn't happen with current backend)
       } else if (item.status === 'complete') {
         if (!isFinished) {
           console.log(`[Tier 2][CF][${requestId}] RunPod signaled completion via stream`);
@@ -569,7 +565,22 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
       }
     }
 
-    // Adaptive polling: slow down if no new data
+    // 2. Process buffer in strict order
+    while (chunkBuffer.has(nextExpectedChunk)) {
+      console.log(`[Tier 2][CF][${requestId}] Writing chunk ${nextExpectedChunk}`);
+      const audioData = chunkBuffer.get(nextExpectedChunk);
+      await writer.write(new Uint8Array(audioData));
+      
+      totalChunks += 1;
+      totalBytes += audioData.byteLength;
+      chunkBuffer.delete(nextExpectedChunk);
+      nextExpectedChunk++;
+      
+      // Reset poll interval on activity
+      pollInterval = 500;
+    }
+
+    // Adaptive polling: slow down if no new data processed
     pollInterval = Math.min(pollInterval * 1.5, 5000);
 
     // Check Job Status
@@ -577,14 +588,18 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
       console.error(`[Tier 2][CF][${requestId}] RunPod job failed:`, data.error);
       isFinished = true;
     } else if (data.status === 'COMPLETED') {
-      // If we haven't seen the stream completion message yet, start the drain timer
+      // Drain Mode: Wait until buffer is empty or we see "complete" message
+      // But if we are missing a chunk (e.g. have 1, 3, missing 2), we might stall.
+      // We should eventually timeout or skip if job is done.
+      
       if (!isFinished) {
         if (!completedAt) {
           console.log(`[Tier 2][CF][${requestId}] RunPod status is COMPLETED, waiting for stream drain...`);
           completedAt = Date.now();
           pollInterval = 200; // Poll faster to finish up
         } else if ((Date.now() - completedAt) > DRAIN_TIMEOUT_MS) {
-            console.warn(`[Tier 2][CF][${requestId}] Timed out waiting for stream drain`);
+            console.warn(`[Tier 2][CF][${requestId}] Timed out waiting for stream drain (Missing chunk ${nextExpectedChunk}?)`);
+            // Force flush remaining if needed? No, order matters for audio.
             isFinished = true;
         }
       }
