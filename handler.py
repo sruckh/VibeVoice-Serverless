@@ -437,9 +437,11 @@ def handler(job):
 
     if stream:
         log.info(f"[Handler] Streaming mode requested: format={output_format}")
-        return runpod.stream(handler_stream(job_input, output_format))
+        yield from handler_stream(job_input, output_format)
+        return
 
-    return handler_batch(job, output_format)
+    result = handler_batch(job, output_format)
+    yield result
 
 if __name__ == "__main__":
     runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})
