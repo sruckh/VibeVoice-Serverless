@@ -223,10 +223,11 @@ async function handleStreamingTTS(request, env, ctx) {
   console.log(`[Tier 2][CF][${requestId}] Streaming TTS request received`);
 
   try {
-    const { text, voice, service } = await request.json();
+    const { text, input, voice, service, response_format } = await request.json();
+    const resolvedText = text || input;
 
     // Validation
-    if (!text || text.trim().length === 0) {
+    if (!resolvedText || resolvedText.trim().length === 0) {
       return errorResponse('Text is required', 400);
     }
 
@@ -265,7 +266,7 @@ async function handleStreamingTTS(request, env, ctx) {
     ctx.waitUntil(forwardRunPodStream({
       runpodUrls,
       apiKey,
-      text,
+      text: resolvedText,
       speakerName,
       service,
       writable,

@@ -11,6 +11,7 @@ from botocore.exceptions import NoCredentialsError
 import time
 from pathlib import Path
 import subprocess
+import tempfile
 
 from inference import VibeVoiceInference
 import config
@@ -53,16 +54,39 @@ def to_numpy_audio(wav):
         wav = wav.squeeze()
     return wav.astype(np.float32)
 
-def encode_to_linacodec(audio):
-    """Encode audio to LinaCodec tokens and embedding."""
+def encode_to_linacodec(audio, sample_rate):
+    """Encode audio to LinaCodec tokens and embedding using a temp WAV."""
     lina = load_linacodec()
-    tokens, embedding = lina.encode(audio)
-    return tokens, embedding
 
-def decode_with_linacodec(audio):
+    if hasattr(audio, "cpu"):
+        audio = audio.detach().cpu().numpy()
+    audio = np.asarray(audio, dtype=np.float32).squeeze()
+
+    if audio.ndim == 0:
+        audio = audio.reshape(1, 1)
+    elif audio.ndim == 1:
+        audio = audio.reshape(1, -1)
+    elif audio.ndim > 2:
+        while audio.ndim > 2:
+            audio = audio[0]
+        if audio.ndim == 1:
+            audio = audio.reshape(1, -1)
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+        tmp_wav_path = tmp_wav.name
+
+    try:
+        sf.write(tmp_wav_path, audio.T, sample_rate, format="WAV")
+        tokens, embedding = lina.encode(tmp_wav_path)
+        return tokens, embedding
+    finally:
+        if os.path.exists(tmp_wav_path):
+            os.unlink(tmp_wav_path)
+
+def decode_with_linacodec(audio, sample_rate):
     """Encode and decode audio via LinaCodec to get 48kHz output."""
     lina = load_linacodec()
-    tokens, embedding = lina.encode(audio)
+    tokens, embedding = encode_to_linacodec(audio, sample_rate)
     decoded = lina.decode(tokens, embedding)
     if hasattr(decoded, "cpu"):
         decoded = decoded.cpu().numpy()
@@ -196,7 +220,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
 
             if output_format == "linacodec_tokens":
                 log.info("[Streaming] Encoding chunk with LinaCodec tokens")
-                tokens, embedding = encode_to_linacodec(audio)
+                tokens, embedding = encode_to_linacodec(audio, sample_rate)
                 tokens_list = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                 embedding_list = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
 
@@ -214,7 +238,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
 
             if use_linacodec_decode:
                 log.info("[Streaming] Encoding + decoding chunk via LinaCodec")
-                decoded = decode_with_linacodec(audio)
+                decoded = decode_with_linacodec(audio, sample_rate)
                 out_sample_rate = 48000
             else:
                 out_sample_rate = sample_rate
@@ -340,7 +364,7 @@ def handler_batch(job, output_format):
         if output_format == "linacodec_tokens":
             if not LINACODEC_AVAILABLE:
                 return {"error": "LinaCodec not available"}
-            tokens, embedding = encode_to_linacodec(wav)
+            tokens, embedding = encode_to_linacodec(wav, sample_rate)
             tokens_list = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
             embedding_list = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
             return {
