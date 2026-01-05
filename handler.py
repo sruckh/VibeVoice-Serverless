@@ -72,31 +72,28 @@ def encode_mp3_bytes(audio, src_rate, dst_rate=48000):
         return b""
 
 def resample_pcm_bytes(audio_bytes, src_rate, dst_rate=48000):
-    """Resample PCM bytes using ffmpeg (e.g. 24k -> 48k)."""
+    """Resample PCM bytes using torchaudio (24k -> 48k)."""
     if src_rate == dst_rate:
         return audio_bytes
 
     try:
-        process = subprocess.Popen(
-            [
-                "ffmpeg",
-                "-y",
-                "-f", "s16le",
-                "-ar", str(src_rate),
-                "-ac", "1",
-                "-i", "pipe:0",
-                "-f", "s16le",
-                "-ar", str(dst_rate),
-                "pipe:1",
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        out_bytes, _ = process.communicate(input=audio_bytes)
-        return out_bytes
+        # Convert bytes (int16) to float32 tensor
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32767.0
+        audio_tensor = torch.from_numpy(audio_np).unsqueeze(0) # (1, time)
+
+        # Resample
+        resampler = torchaudio.transforms.Resample(src_rate, dst_rate)
+        resampled_tensor = resampler(audio_tensor)
+
+        # Convert back to int16 bytes
+        resampled_np = resampled_tensor.squeeze(0).numpy()
+        resampled_np = np.clip(resampled_np, -1.0, 1.0)
+        pcm16 = (resampled_np * 32767.0).astype(np.int16)
+        return pcm16.tobytes()
+        
     except Exception as e:
-        log.error(f"FFmpeg resampling failed: {e}")
+        log.error(f"Torchaudio resampling failed: {e}")
+        # Fallback to ffmpeg if torch fails? Or just return raw?
         return audio_bytes
 
 def cleanup_old_files(directory, days=2):
@@ -259,14 +256,10 @@ def handler_stream(job_input, output_format):
         yield {"error": f"Unknown output_format: {output_format}"}
         return
 
-    # Force safe chunk size to avoid RunPod payload limits (4MB)
-    # 350 chars ~ 15-20s audio. At 48kHz 16-bit mono:
-    # 20s * 48000 * 2 bytes = 1.92 MB. Safe.
-    # 500 chars was pushing ~3MB which risks overhead limits.
-    max_chunk_chars = config.MAX_CHUNK_CHARS
-    if max_chunk_chars > 350:
-         log.info(f"Overriding MAX_CHUNK_CHARS ({max_chunk_chars}) to 350 for streaming safety")
-         max_chunk_chars = 350
+    # Force chunk size to ~500 chars (~20s audio).
+    # This provides good prosody while keeping payload size very safe.
+    max_chunk_chars = 500
+    log.info(f"Using forced max_chunk_chars={max_chunk_chars} for better prosody")
 
     yield from stream_audio_chunks(
         text=params["text"],
@@ -376,6 +369,8 @@ def handler_batch(job, output_format):
 
     except Exception as e:
         log.error(f"Inference failed: {e}")
+
+import torchaudio
 
 def handler(job):
     """Runpod serverless handler (streaming + batch)."""
