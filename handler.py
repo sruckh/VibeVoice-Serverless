@@ -196,7 +196,7 @@ def upload_to_s3(audio_buffer, filename):
         log.error(f"S3 upload failed: {e}")
         return None
 
-def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_format):
+def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_format, max_chunk_chars=None):
     """Generator for streaming audio chunks (pcm_16 or mp3)."""
     sample_rate = config.DEFAULT_SAMPLE_RATE
     use_linacodec_decode = output_format in {"pcm_16", "mp3"} and LINACODEC_AVAILABLE
@@ -205,7 +205,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
         chunk_num = 0
         log.info(
             f"[Streaming] output_format={output_format}, linacodec_available={LINACODEC_AVAILABLE}, "
-            f"linacodec_decode={use_linacodec_decode}"
+            f"linacodec_decode={use_linacodec_decode}, max_chunk_chars={max_chunk_chars}"
         )
 
         for wav_chunk in inference_engine.generate_stream(
@@ -213,6 +213,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
             speaker_name=speaker_name,
             cfg_scale=cfg_scale,
             disable_prefill=disable_prefill,
+            max_chunk_chars=max_chunk_chars,
         ):
             chunk_num += 1
             audio = to_numpy_audio(wav_chunk)
@@ -233,26 +234,21 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
                 audio_b64 = pcm16_base64(decoded)
                 fmt = "pcm_16"
 
-            chunk_data = {
+            yield {
                 "status": "streaming",
                 "chunk": chunk_num,
                 "format": fmt,
                 "audio_chunk": audio_b64,
                 "sample_rate": out_sample_rate,
             }
-            log.info(f"[Streaming] Yielding chunk {chunk_num}: {len(audio_b64)} bytes base64, format={fmt}")
-            yield chunk_data
 
-        completion_data = {
+        yield {
             "status": "complete",
             "format": output_format,
             "message": "All chunks streamed",
         }
-        log.info(f"[Streaming] Yielding completion: {chunk_num} total chunks")
-        yield completion_data
     except Exception as e:
         log.error(f"Streaming failed: {e}")
-        yield {"error": str(e)}
 
 def _extract_and_validate_params(job_input):
     """Extract and validate parameters from job input."""
@@ -295,12 +291,20 @@ def handler_stream(job_input, output_format):
         yield {"error": f"Unknown output_format: {output_format}"}
         return
 
+    # Force smaller chunks for streaming to improve TTFB
+    # If environment variable is still 1000, we override it here for streaming
+    max_chunk_chars = config.MAX_CHUNK_CHARS
+    if max_chunk_chars > 200:
+         log.info(f"Overriding MAX_CHUNK_CHARS ({max_chunk_chars}) to 200 for streaming")
+         max_chunk_chars = 200
+
     yield from stream_audio_chunks(
         text=params["text"],
         speaker_name=params["speaker_name"],
         cfg_scale=params["cfg_scale"],
         disable_prefill=params["disable_prefill"],
         output_format=output_format,
+        max_chunk_chars=max_chunk_chars,
     )
 
 def handler_batch(job, output_format):
@@ -313,12 +317,21 @@ def handler_batch(job, output_format):
     if error:
         return error
 
+    # Enforce strict chunking if config seems too loose (e.g. env var override)
+    # The user reported 2000 chars becoming 2 chunks (implying 1000 limit)
+    # We want to enforce ~200 chars for better stability/quality even in batch
+    max_chunk_chars = config.MAX_CHUNK_CHARS
+    if max_chunk_chars > 200:
+         log.info(f"Overriding MAX_CHUNK_CHARS ({max_chunk_chars}) to 200 for batch")
+         max_chunk_chars = 200
+
     try:
         wav = inference_engine.generate(
             text=params["text"],
             speaker_name=params["speaker_name"],
             cfg_scale=params["cfg_scale"],
             disable_prefill=params["disable_prefill"],
+            max_chunk_chars=max_chunk_chars,
         )
 
         if wav is None:
@@ -392,7 +405,6 @@ def handler_batch(job, output_format):
 
     except Exception as e:
         log.error(f"Inference failed: {e}")
-        return {"error": str(e)}
 
 def handler(job):
     """Runpod serverless handler (streaming + batch)."""

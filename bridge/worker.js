@@ -515,7 +515,10 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
     if (streamData.length > lastStreamPosition) {
       const newItems = streamData.slice(lastStreamPosition);
 
-      for (const item of newItems) {
+      for (const rawItem of newItems) {
+        // RunPod sometimes wraps the yield in an 'output' property
+        const item = rawItem.output || rawItem;
+
         if (item.status === 'streaming' && item.audio_chunk) {
           const audioData = base64ToArrayBuffer(item.audio_chunk);
           await writer.write(new Uint8Array(audioData));

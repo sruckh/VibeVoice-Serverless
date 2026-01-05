@@ -259,6 +259,7 @@ class VibeVoiceInference:
         speaker_name=None,
         cfg_scale=1.3,
         disable_prefill=False,
+        max_chunk_chars=None,
     ):
         """Generate audio from text using VibeVoice 7B with smart chunking"""
         if self.model is None:
@@ -279,15 +280,13 @@ class VibeVoiceInference:
         speaker_name = speaker_name or config.DEFAULT_SPEAKER
         voice_path = self.voice_mapper.get_voice_path(speaker_name)
 
-        # Format text with VibeVoice script format
-        # VibeVoice expects "Speaker {number}: text" format, not custom names
-        formatted_text = f"Speaker 1: {text}"
-
         # Smart chunk text if it's too long
-        chunks = self._smart_chunk_text(text, self.max_chunk_chars)
+        chunk_limit = max_chunk_chars if max_chunk_chars is not None else self.max_chunk_chars
+        chunks = self._smart_chunk_text(text, chunk_limit)
 
         if len(chunks) == 1:
             # Single chunk, generate directly
+            formatted_text = f"Speaker 1: {chunks[0]}"
             temp_txt_path = None
             try:
                 temp_txt_path = os.path.join(self.temp_dir, f"temp_{os.getpid()}.txt")
@@ -319,96 +318,83 @@ class VibeVoiceInference:
                         verbose=False,
                         is_prefill=not disable_prefill,
                     )
-
-                # Cleanup temp file
+                
                 if temp_txt_path and os.path.exists(temp_txt_path):
                     os.remove(temp_txt_path)
-                
-                return outputs.speech_outputs[0] if outputs.speech_outputs else None
-            except Exception as e:
+
+                if outputs.speech_outputs and outputs.speech_outputs[0] is not None:
+                    return outputs.speech_outputs[0]
+                return None
+
+            except Exception:
                 if temp_txt_path and os.path.exists(temp_txt_path):
                     os.remove(temp_txt_path)
                 raise
-        else:
-            # Multiple chunks, generate and concatenate
-            log.info(f"Processing {len(chunks)} chunks...")
-            audio_chunks = []
 
-            for i, chunk_text in enumerate(chunks, 1):
-                log.info(f"Generating chunk {i}/{len(chunks)} ({len(chunk_text)} chars)...")
+        # Multiple chunks, generate and concatenate
+        log.info(f"Generating {len(chunks)} chunks (max {chunk_limit} chars each)...")
+        combined_wav = []
+        
+        for i, chunk_text in enumerate(chunks, 1):
+            log.info(f"Generating chunk {i}/{len(chunks)} ({len(chunk_text)} chars)...")
+            
+            formatted_chunk = f"Speaker 1: {chunk_text}"
+            temp_txt_path = None
+            
+            try:
+                temp_txt_path = os.path.join(self.temp_dir, f"temp_{os.getpid()}_{i}.txt")
+                with open(temp_txt_path, 'w') as f:
+                    f.write(formatted_chunk)
+                    
+                with torch.no_grad():
+                    _set_seed(session_seed)
+                    inputs = self.processor(
+                        text=[formatted_chunk],
+                        voice_samples=[[voice_path]],
+                        padding=True,
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                    )
+                    
+                    for k, v in inputs.items():
+                        if torch.is_tensor(v):
+                            inputs[k] = v.to(self.device)
+                            
+                    chunk_wav = self.model.generate(
+                        **inputs,
+                        max_new_tokens=None,
+                        cfg_scale=cfg_scale,
+                        tokenizer=self.processor.tokenizer,
+                        generation_config={'do_sample': False},
+                        verbose=False,
+                        is_prefill=not disable_prefill,
+                    )
+                
+                if temp_txt_path and os.path.exists(temp_txt_path):
+                    os.remove(temp_txt_path)
+                
+                if chunk_wav.speech_outputs and chunk_wav.speech_outputs[0] is not None:
+                    wav_data = chunk_wav.speech_outputs[0]
+                    if torch.is_tensor(wav_data):
+                        wav_data = wav_data.cpu().numpy().squeeze()
+                    combined_wav.append(wav_data)
+                    
+                    # Add silence between chunks
+                    if i < len(chunks):
+                        silence = np.zeros(int(config.DEFAULT_SAMPLE_RATE * (config.CHUNK_SILENCE_MS / 1000)))
+                        combined_wav.append(silence)
+                        
+            except Exception as e:
+                log.error(f"Error generating chunk {i}: {e}")
+                if temp_txt_path and os.path.exists(temp_txt_path):
+                    os.remove(temp_txt_path)
+                # Continue with other chunks or fail? For now fail
+                raise e
 
-                # Format each chunk with VibeVoice script format
-                formatted_chunk = f"Speaker 1: {chunk_text}"
-
-                temp_txt_path = None
-                try:
-                    temp_txt_path = os.path.join(self.temp_dir, f"temp_{os.getpid()}_{i}.txt")
-                    with open(temp_txt_path, 'w') as f:
-                        f.write(formatted_chunk)
-
-                    with torch.no_grad():
-                        _set_seed(session_seed)
-                        # voice_samples must be a list of lists
-                        inputs = self.processor(
-                            text=[formatted_chunk],
-                            voice_samples=[[voice_path]],  # List of lists!
-                            padding=True,
-                            return_tensors="pt",
-                            return_attention_mask=True,
-                        )
-
-                        # Move tensors to target device
-                        for k, v in inputs.items():
-                            if torch.is_tensor(v):
-                                inputs[k] = v.to(self.device)
-
-                        chunk_wav = self.model.generate(
-                            **inputs,
-                            max_new_tokens=None,
-                            cfg_scale=cfg_scale,
-                            tokenizer=self.processor.tokenizer,
-                            generation_config={'do_sample': False},
-                            verbose=False,
-                            is_prefill=not disable_prefill,
-                        )
-
-                        # Cleanup temp file
-                        if temp_txt_path and os.path.exists(temp_txt_path):
-                            os.remove(temp_txt_path)
-
-                        if chunk_wav.speech_outputs and chunk_wav.speech_outputs[0] is not None:
-                            chunk_audio = chunk_wav.speech_outputs[0]
-                            audio_chunks.append(chunk_audio)
-
-                except Exception as e:
-                    if temp_txt_path and os.path.exists(temp_txt_path):
-                        os.remove(temp_txt_path)
-                    raise
-
-            # Concatenate all audio chunks (optionally with short silence between chunks)
-            if audio_chunks:
-                silence_ms = max(0, int(getattr(config, "CHUNK_SILENCE_MS", 0)))
-                silence_samples = int(config.DEFAULT_SAMPLE_RATE * (silence_ms / 1000.0))
-
-                if silence_samples > 0 and len(audio_chunks) > 1:
-                    combined = []
-                    for idx, chunk in enumerate(audio_chunks):
-                        if idx > 0:
-                            silence = torch.zeros(
-                                silence_samples,
-                                device=chunk.device,
-                                dtype=chunk.dtype,
-                            )
-                            combined.append(silence)
-                        combined.append(chunk)
-                    concatenated_audio = torch.cat(combined, dim=-1)
-                else:
-                    concatenated_audio = torch.cat(audio_chunks, dim=-1)
-
-                log.info(f"Concatenated {len(audio_chunks)} chunks → {concatenated_audio.shape[-1]} samples ({concatenated_audio.shape[-1]/config.DEFAULT_SAMPLE_RATE:.1f}s)")
-                return concatenated_audio
-            else:
-                return None
+        if not combined_wav:
+            return None
+            
+        return np.concatenate(combined_wav)
 
     def generate_stream(
         self,
@@ -416,12 +402,11 @@ class VibeVoiceInference:
         speaker_name=None,
         cfg_scale=1.3,
         disable_prefill=False,
+        max_chunk_chars=None,
     ):
         """Generate audio in chunks and yield each chunk as it completes."""
         if self.model is None:
             self.load_model()
-
-        log.info(f"Streaming audio for text ({len(text)} chars): {text[:50]}...")
 
         session_seed = int.from_bytes(os.urandom(4), "little")
         log.info(f"Using session seed: {session_seed}")
@@ -437,9 +422,10 @@ class VibeVoiceInference:
         voice_path = self.voice_mapper.get_voice_path(speaker_name)
 
         # Smart chunk text if it's too long
-        chunks = self._smart_chunk_text(text, self.max_chunk_chars)
+        chunk_limit = max_chunk_chars if max_chunk_chars is not None else self.max_chunk_chars
+        chunks = self._smart_chunk_text(text, chunk_limit)
 
-        log.info(f"Streaming {len(chunks)} chunks...")
+        log.info(f"Streaming {len(chunks)} chunks (max_chunk_chars={chunk_limit})...")
 
         for i, chunk_text in enumerate(chunks, 1):
             log.info(f"Generating chunk {i}/{len(chunks)} ({len(chunk_text)} chars)...")
@@ -448,6 +434,8 @@ class VibeVoiceInference:
             temp_txt_path = None
 
             try:
+                # VibeVoice might rely on file existence in some internal path checks?
+                # Keeping file writing just in case, matching original behavior.
                 temp_txt_path = os.path.join(self.temp_dir, f"temp_{os.getpid()}_{i}.txt")
                 with open(temp_txt_path, 'w') as f:
                     f.write(formatted_chunk)
