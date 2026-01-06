@@ -279,10 +279,10 @@ def handler_stream(job_input, output_format):
         yield {"error": f"Unknown output_format: {output_format}"}
         return
 
-    # S3 Streaming enabled: We can use large chunks for maximum prosody quality
-    # without worrying about RunPod payload limits.
-    max_chunk_chars = 1000
-    log.info(f"Using forced max_chunk_chars={max_chunk_chars} for optimal prosody (S3 backed)")
+    # S3 Streaming enabled: 300 chars provides a responsive streaming feel
+    # while staying perfectly stable.
+    max_chunk_chars = 300
+    log.info(f"Using forced max_chunk_chars={max_chunk_chars} for responsive streaming (S3 backed)")
 
     yield from stream_audio_chunks(
         text=params["text"],
