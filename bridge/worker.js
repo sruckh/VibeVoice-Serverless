@@ -511,6 +511,11 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
   let totalChunks = 0;
   let totalBytes = 0;
   let maxChunkProcessed = 0; // Track by ID instead of array index
+  
+  // Robust ordered processing state
+  let nextExpectedChunk = 1;
+  const chunkBuffer = new Map(); // id -> uint8array
+
   let pollInterval = 500;
   let isFinished = false;
   const startTime = Date.now();
@@ -543,21 +548,31 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
       // RunPod sometimes wraps the yield in an 'output' property
       const item = rawItem.output || rawItem;
 
-      if (item.status === 'streaming' && item.audio_chunk) {
-        // Only process if we haven't seen this chunk number yet
-        // If chunk ID is missing (shouldn't happen), fall back to processing
-        const chunkId = item.chunk || (maxChunkProcessed + 1);
+      if (item.status === 'streaming') {
+        const chunkId = item.chunk;
         
-        if (chunkId > maxChunkProcessed) {
-          console.log(`[Tier 2][CF][${requestId}] Processing chunk ${chunkId}`);
-          const audioData = base64ToArrayBuffer(item.audio_chunk);
-          await writer.write(new Uint8Array(audioData));
-          totalChunks += 1;
-          totalBytes += audioData.byteLength;
-          maxChunkProcessed = chunkId;
+        // Only buffer if we haven't seen/buffered this chunk yet
+        if (chunkId && chunkId >= nextExpectedChunk && !chunkBuffer.has(chunkId)) {
           
-          // Reset poll interval on activity
-          pollInterval = 500;
+          if (item.audio_url) {
+             // Fetch from S3 (Bypass payload limit)
+             console.log(`[Tier 2][CF][${requestId}] Fetching chunk ${chunkId} from S3: ${item.audio_url}`);
+             try {
+                 const s3Resp = await fetch(item.audio_url);
+                 if (s3Resp.ok) {
+                     const ab = await s3Resp.arrayBuffer();
+                     chunkBuffer.set(chunkId, ab);
+                 } else {
+                     console.error(`[Tier 2][CF][${requestId}] Failed to fetch S3 chunk ${chunkId}: ${s3Resp.status}`);
+                 }
+             } catch (e) {
+                 console.error(`[Tier 2][CF][${requestId}] Error fetching S3 chunk ${chunkId}:`, e);
+             }
+          } else if (item.audio_chunk) {
+             // Base64 (Standard small payload)
+             console.log(`[Tier 2][CF][${requestId}] Buffered base64 chunk ${chunkId}`);
+             chunkBuffer.set(chunkId, base64ToArrayBuffer(item.audio_chunk));
+          }
         }
       } else if (item.status === 'complete') {
         if (!isFinished) {
@@ -567,6 +582,21 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
       } else if (item.error) {
         console.error(`[Tier 2][CF][${requestId}] RunPod returned error in stream:`, item.error);
       }
+    }
+
+    // Process buffer in strict order
+    while (chunkBuffer.has(nextExpectedChunk)) {
+      console.log(`[Tier 2][CF][${requestId}] Writing chunk ${nextExpectedChunk}`);
+      const audioData = chunkBuffer.get(nextExpectedChunk);
+      await writer.write(new Uint8Array(audioData));
+      
+      totalChunks += 1;
+      totalBytes += audioData.byteLength;
+      chunkBuffer.delete(nextExpectedChunk);
+      nextExpectedChunk++;
+      
+      // Reset poll interval on activity
+      pollInterval = 500;
     }
 
     // Adaptive polling: slow down if no new data
