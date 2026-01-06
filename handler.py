@@ -72,28 +72,37 @@ def encode_mp3_bytes(audio, src_rate, dst_rate=48000):
         return b""
 
 def resample_pcm_bytes(audio_bytes, src_rate, dst_rate=48000):
-    """Resample PCM bytes using torchaudio (24k -> 48k)."""
+    """Resample PCM bytes using ffmpeg (e.g. 24k -> 48k). Robust fallback."""
     if src_rate == dst_rate:
         return audio_bytes
 
     try:
-        # Convert bytes (int16) to float32 tensor
-        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32767.0
-        audio_tensor = torch.from_numpy(audio_np).unsqueeze(0) # (1, time)
-
-        # Resample
-        resampler = torchaudio.transforms.Resample(src_rate, dst_rate)
-        resampled_tensor = resampler(audio_tensor)
-
-        # Convert back to int16 bytes
-        resampled_np = resampled_tensor.squeeze(0).numpy()
-        resampled_np = np.clip(resampled_np, -1.0, 1.0)
-        pcm16 = (resampled_np * 32767.0).astype(np.int16)
-        return pcm16.tobytes()
+        process = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-y",
+                "-f", "s16le",
+                "-ar", str(src_rate),
+                "-ac", "1",
+                "-i", "pipe:0",
+                "-f", "s16le",
+                "-ar", str(dst_rate),
+                "-ac", "1",
+                "pipe:1",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        out_bytes, _ = process.communicate(input=audio_bytes)
         
+        if not out_bytes:
+            log.error("FFmpeg resampling returned empty output, falling back to original")
+            return audio_bytes
+            
+        return out_bytes
     except Exception as e:
-        log.error(f"Torchaudio resampling failed: {e}")
-        # Fallback to ffmpeg if torch fails? Or just return raw?
+        log.error(f"FFmpeg resampling failed: {e}")
         return audio_bytes
 
 def cleanup_old_files(directory, days=2):
@@ -369,8 +378,6 @@ def handler_batch(job, output_format):
 
     except Exception as e:
         log.error(f"Inference failed: {e}")
-
-import torchaudio
 
 def handler(job):
     """Runpod serverless handler (streaming + batch)."""
