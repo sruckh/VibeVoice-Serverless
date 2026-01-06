@@ -72,37 +72,33 @@ def encode_mp3_bytes(audio, src_rate, dst_rate=48000):
         return b""
 
 def resample_pcm_bytes(audio_bytes, src_rate, dst_rate=48000):
-    """Resample PCM bytes using ffmpeg (e.g. 24k -> 48k). Robust fallback."""
+    """Resample PCM bytes using numpy linear interpolation. Fast and gap-free."""
     if src_rate == dst_rate:
         return audio_bytes
 
     try:
-        process = subprocess.Popen(
-            [
-                "ffmpeg",
-                "-y",
-                "-f", "s16le",
-                "-ar", str(src_rate),
-                "-ac", "1",
-                "-i", "pipe:0",
-                "-f", "s16le",
-                "-ar", str(dst_rate),
-                "-ac", "1",
-                "pipe:1",
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        out_bytes, _ = process.communicate(input=audio_bytes)
+        # Convert bytes to numpy array
+        audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
         
-        if not out_bytes:
-            log.error("FFmpeg resampling returned empty output, falling back to original")
+        if len(audio) == 0:
             return audio_bytes
-            
-        return out_bytes
+
+        # Calculate new time axis
+        duration_sec = len(audio) / src_rate
+        new_length = int(duration_sec * dst_rate)
+        
+        x_old = np.linspace(0, duration_sec, len(audio))
+        x_new = np.linspace(0, duration_sec, new_length)
+        
+        # Linear interpolation
+        resampled = np.interp(x_new, x_old, audio)
+        
+        # Convert back to int16 bytes
+        resampled = np.clip(resampled, -32768, 32767).astype(np.int16)
+        return resampled.tobytes()
+        
     except Exception as e:
-        log.error(f"FFmpeg resampling failed: {e}")
+        log.error(f"Numpy resampling failed: {e}")
         return audio_bytes
 
 def cleanup_old_files(directory, days=2):
