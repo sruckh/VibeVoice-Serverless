@@ -133,7 +133,7 @@ def cleanup_old_files(directory, days=2):
     except Exception as e:
         log.error(f"Cleanup failed: {e}")
 
-def upload_to_s3(audio_buffer, filename):
+def upload_to_s3(audio_buffer, filename, content_type='application/octet-stream'):
     """Upload generated audio to S3 and return URL"""
     if not config.S3_BUCKET_NAME:
         log.warning("S3_BUCKET_NAME not set, returning base64 audio")
@@ -157,7 +157,7 @@ def upload_to_s3(audio_buffer, filename):
             audio_buffer,
             config.S3_BUCKET_NAME,
             filename,
-            ExtraArgs={'ContentType': 'audio/mpeg'}
+            ExtraArgs={'ContentType': content_type}
         )
 
         # Generate presigned URL
@@ -176,6 +176,7 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
     """Generator for streaming audio chunks (pcm_16 or mp3)."""
     src_rate = config.DEFAULT_SAMPLE_RATE # 24000
     dst_rate = 48000 # Upsample to 48kHz to match client expectations
+    session_id = str(uuid.uuid4())
 
     try:
         chunk_num = 0
@@ -193,28 +194,41 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
             chunk_num += 1
             audio = to_numpy_audio(wav_chunk)
             
+            # Prepare audio data
             if output_format == "mp3":
-                # FFmpeg handles resampling internally
-                mp3_bytes = encode_mp3_bytes(audio, src_rate, dst_rate)
-                audio_b64 = base64.b64encode(mp3_bytes).decode("utf-8")
-                fmt = "mp3"
+                audio_bytes = encode_mp3_bytes(audio, src_rate, dst_rate)
+                extension = "mp3"
+                content_type = "audio/mpeg"
             else:
                 # PCM: Must resample explicitly to 48kHz
                 audio = np.clip(audio, -1.0, 1.0)
                 pcm16 = (audio * 32767.0).astype(np.int16)
                 raw_bytes = pcm16.tobytes()
                 
-                resampled_bytes = resample_pcm_bytes(raw_bytes, src_rate, dst_rate)
-                audio_b64 = base64.b64encode(resampled_bytes).decode("utf-8")
-                fmt = "pcm_16"
+                audio_bytes = resample_pcm_bytes(raw_bytes, src_rate, dst_rate)
+                extension = "pcm"
+                content_type = "application/octet-stream"
 
-            yield {
+            # Upload to S3 to bypass RunPod payload limits
+            chunk_filename = f"stream_{session_id}_{chunk_num}.{extension}"
+            audio_buffer = io.BytesIO(audio_bytes)
+            
+            s3_url = upload_to_s3(audio_buffer, chunk_filename, content_type=content_type)
+            
+            response_item = {
                 "status": "streaming",
                 "chunk": chunk_num,
-                "format": fmt,
-                "audio_chunk": audio_b64,
+                "format": output_format,
                 "sample_rate": dst_rate,
             }
+
+            if s3_url:
+                response_item["audio_url"] = s3_url
+            else:
+                # Fallback to base64 if S3 upload fails
+                response_item["audio_chunk"] = base64.b64encode(audio_bytes).decode("utf-8")
+
+            yield response_item
 
         yield {
             "status": "complete",
@@ -265,10 +279,10 @@ def handler_stream(job_input, output_format):
         yield {"error": f"Unknown output_format: {output_format}"}
         return
 
-    # Force chunk size to ~500 chars (~20s audio).
-    # This provides good prosody while keeping payload size very safe.
-    max_chunk_chars = 500
-    log.info(f"Using forced max_chunk_chars={max_chunk_chars} for better prosody")
+    # S3 Streaming enabled: We can use large chunks for maximum prosody quality
+    # without worrying about RunPod payload limits.
+    max_chunk_chars = 1000
+    log.info(f"Using forced max_chunk_chars={max_chunk_chars} for optimal prosody (S3 backed)")
 
     yield from stream_audio_chunks(
         text=params["text"],
