@@ -72,33 +72,43 @@ def encode_mp3_bytes(audio, src_rate, dst_rate=48000):
         return b""
 
 def resample_pcm_bytes(audio_bytes, src_rate, dst_rate=48000):
-    """Resample PCM bytes using numpy linear interpolation. Fast and gap-free."""
+    """Resample PCM bytes using scipy.signal.resample. High quality, no artifacts."""
     if src_rate == dst_rate:
         return audio_bytes
 
     try:
+        import scipy.signal
+
         # Convert bytes to numpy array
         audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
         
         if len(audio) == 0:
             return audio_bytes
 
-        # Calculate new time axis
-        duration_sec = len(audio) / src_rate
-        new_length = int(duration_sec * dst_rate)
+        # Calculate number of samples
+        num_samples = int(len(audio) * dst_rate / src_rate)
         
-        x_old = np.linspace(0, duration_sec, len(audio))
-        x_new = np.linspace(0, duration_sec, new_length)
-        
-        # Linear interpolation
-        resampled = np.interp(x_new, x_old, audio)
+        # Resample using Fourier method (best for maintaining signal integrity)
+        resampled = scipy.signal.resample(audio, num_samples)
         
         # Convert back to int16 bytes
         resampled = np.clip(resampled, -32768, 32767).astype(np.int16)
         return resampled.tobytes()
         
+    except ImportError:
+        log.error("Scipy not found, falling back to numpy linear interp (lower quality)")
+        # Fallback to linear
+        audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+        duration_sec = len(audio) / src_rate
+        new_length = int(duration_sec * dst_rate)
+        x_old = np.linspace(0, duration_sec, len(audio))
+        x_new = np.linspace(0, duration_sec, new_length)
+        resampled = np.interp(x_new, x_old, audio)
+        resampled = np.clip(resampled, -32768, 32767).astype(np.int16)
+        return resampled.tobytes()
+        
     except Exception as e:
-        log.error(f"Numpy resampling failed: {e}")
+        log.error(f"Resampling failed: {e}")
         return audio_bytes
 
 def cleanup_old_files(directory, days=2):
