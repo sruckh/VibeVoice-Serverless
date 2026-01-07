@@ -224,6 +224,24 @@ class VibeVoiceInference:
         # Cleanup
         chunks = [c.strip() for c in chunks if c.strip()]
 
+        # Merge tiny final chunks
+        min_last_chunk_chars = min(
+            getattr(config, "MIN_LAST_CHUNK_CHARS", 0),
+            max_chars,
+        )
+        if len(chunks) > 1 and min_last_chunk_chars > 0:
+            last_len = len(chunks[-1])
+            if last_len < min_last_chunk_chars:
+                # Merge last chunk into previous
+                merged = f"{chunks[-2]} {chunks[-1]}".strip()
+                chunks[-2] = merged
+                chunks.pop()
+                log.info(
+                    "Last chunk too short (%s chars); merged into previous (min %s).",
+                    last_len,
+                    min_last_chunk_chars,
+                )
+
         if not chunks:
             return [text]
 
