@@ -71,7 +71,7 @@ def encode_to_linacodec(audio: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
     Encode audio to LinaCodec tokens.
 
     Args:
-        audio: Audio tensor (float32, 24kHz from VibeVoice)
+        audio: Audio tensor (float32 or bfloat16, 24kHz from VibeVoice)
 
     Returns:
         Tuple of (tokens, global_embedding)
@@ -94,6 +94,10 @@ def encode_to_linacodec(audio: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
 
         # Squeeze all singleton dimensions (e.g. (1, 1, samples) -> (samples,))
         audio = audio.detach().cpu().squeeze()
+
+        # Convert BFloat16 to Float32 (soundfile doesn't support bfloat16)
+        if audio.dtype == torch.bfloat16:
+            audio = audio.to(torch.float32)
 
         # Ensure 2D (channels, time) for torchaudio/soundfile
         if audio.dim() == 1:
@@ -215,18 +219,31 @@ class VibeVoiceInference:
             # Determine dtype and attention implementation
             if self.device == "cuda":
                 load_dtype = torch.bfloat16
-                # Use sdpa directly - flash_attention_2 uses too much memory during loading
-                attn_impl = "sdpa"
                 
-                log.info(f"Loading model with sdpa (memory-efficient for 24GB GPUs)...")
-                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                    config.MODEL_PATH,
-                    torch_dtype=load_dtype,
-                    device_map="cuda",
-                    attn_implementation=attn_impl,
-                    low_cpu_mem_usage=True,  # Reduce CPU→GPU transfer memory spikes
-                )
-                log.info(f"Model loaded successfully with sdpa")
+                # Try flash_attention_2 first (best performance), fall back to sdpa
+                try:
+                    log.info("Loading model with flash_attention_2...")
+                    self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                        config.MODEL_PATH,
+                        torch_dtype=load_dtype,
+                        device_map="cuda",
+                        attn_implementation="flash_attention_2",
+                        low_cpu_mem_usage=True,
+                    )
+                    log.info("Model loaded successfully with flash_attention_2")
+                except Exception as e:
+                    log.warning(f"flash_attention_2 failed ({e}), falling back to sdpa...")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    
+                    self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
+                        config.MODEL_PATH,
+                        torch_dtype=load_dtype,
+                        device_map="cuda",
+                        attn_implementation="sdpa",
+                        low_cpu_mem_usage=True,
+                    )
+                    log.info("Model loaded successfully with sdpa")
             else:
                 load_dtype = torch.float32
                 attn_impl = "sdpa"
