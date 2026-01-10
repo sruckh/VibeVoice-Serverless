@@ -7,7 +7,10 @@ import logging
 import soundfile as sf
 import tempfile
 import random
+import time
+import base64
 from pathlib import Path
+from typing import Generator, Dict, Any, Tuple
 
 # Add VibeVoice to path (it's cloned at runtime in bootstrap.sh)
 sys.path.insert(0, '/runpod-volume/vibevoice/vibevoice')
@@ -19,6 +22,105 @@ from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForCondition
 from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
 
 log = logging.getLogger(__name__)
+
+# =============================================================================
+# LINACODEC IMPORTS (for streaming support)
+# =============================================================================
+try:
+    from linacodec.codec import LinaCodec
+    LINACODEC_AVAILABLE = True
+    log.info("LinaCodec is available for streaming")
+except ImportError:
+    LINACODEC_AVAILABLE = False
+    log.warning("LinaCodec not available. Streaming will fall back to raw audio.")
+
+# =============================================================================
+# LINACODEC GLOBAL CACHE
+# =============================================================================
+_LINA_CODEC_MODEL = None
+
+
+def load_linacodec():
+    """
+    Load LinaCodec encoder/decoder (cached globally)
+
+    Model is auto-downloaded from HuggingFace on first use.
+    Uses RunPod's default HF cache paths to benefit from smart caching.
+    """
+    global _LINA_CODEC_MODEL
+
+    if _LINA_CODEC_MODEL is not None:
+        log.info("[VibeVoice] Using cached LinaCodec model")
+        return _LINA_CODEC_MODEL
+
+    if not LINACODEC_AVAILABLE:
+        raise RuntimeError("LinaCodec is not installed")
+
+    log.info("[VibeVoice] Loading LinaCodec model...")
+
+    # LinaCodec auto-downloads from HuggingFace to default cache
+    # RunPod's smart caching will mount the model if already cached
+    _LINA_CODEC_MODEL = LinaCodec()
+
+    log.info("[VibeVoice] LinaCodec loaded successfully!")
+    return _LINA_CODEC_MODEL
+
+
+def encode_to_linacodec(audio: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Encode audio to LinaCodec tokens.
+
+    Args:
+        audio: Audio tensor (float32, 24kHz from VibeVoice)
+
+    Returns:
+        Tuple of (tokens, global_embedding)
+
+    Note: LinaCodec automatically upsamples to 48kHz during encoding.
+    """
+    if not LINACODEC_AVAILABLE:
+        raise RuntimeError("LinaCodec is not available")
+
+    lina = load_linacodec()
+
+    # Create temporary file for LinaCodec (it requires a file path)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+        tmp_wav_path = tmp_wav.name
+
+    try:
+        # Prepare audio tensor
+        if isinstance(audio, np.ndarray):
+            audio = torch.from_numpy(audio)
+
+        # Squeeze all singleton dimensions (e.g. (1, 1, samples) -> (samples,))
+        audio = audio.detach().cpu().squeeze()
+
+        # Ensure 2D (channels, time) for torchaudio/soundfile
+        if audio.dim() == 1:
+            audio = audio.unsqueeze(0)
+        elif audio.dim() == 0:
+            audio = audio.unsqueeze(0).unsqueeze(0)
+        elif audio.dim() > 2:
+            # If still > 2D, take the first slice of extra dimensions
+            while audio.dim() > 2:
+                audio = audio[0]
+            if audio.dim() == 1:
+                audio = audio.unsqueeze(0)
+
+        # VibeVoice outputs at 24kHz
+        sf.write(tmp_wav_path, audio.T, 24000, format='WAV')
+
+        # Encode from file path
+        # LinaCodec handles loading and resampling to 48kHz
+        tokens, embedding = lina.encode(tmp_wav_path)
+
+        return tokens, embedding
+
+    finally:
+        # Clean up temporary file
+        if os.path.exists(tmp_wav_path):
+            os.unlink(tmp_wav_path)
+
 
 class VoiceMapper:
     """Maps speaker names to voice file paths"""
@@ -466,3 +568,176 @@ class VibeVoiceInference:
                 if temp_txt_path and os.path.exists(temp_txt_path):
                     os.remove(temp_txt_path)
                 raise
+
+    def encode_mp3(self, audio_array: np.ndarray, sample_rate: int) -> bytes:
+        """Encode PCM numpy array to MP3 bytes using ffmpeg"""
+        import subprocess
+
+        # Ensure int16
+        if audio_array.dtype != np.int16:
+            audio_int16 = (audio_array * 32767).astype(np.int16)
+        else:
+            audio_int16 = audio_array
+
+        raw_bytes = audio_int16.tobytes()
+
+        try:
+            process = subprocess.Popen(
+                ['ffmpeg', '-y', '-f', 's16le', '-ar', str(sample_rate), '-ac', '1',
+                 '-i', 'pipe:0', '-f', 'mp3', '-b:a', '192k', 'pipe:1'],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL
+            )
+            mp3_bytes, _ = process.communicate(input=raw_bytes)
+            return mp3_bytes
+        except Exception as e:
+            log.error(f"FFmpeg encoding failed: {e}")
+            return b""
+
+    def generate_audio_stream_decoded(
+        self,
+        text,
+        speaker_name=None,
+        cfg_scale=1.3,
+        disable_prefill=False,
+        max_chunk_chars=None,
+        output_format="pcm_16",
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        Generate streaming audio with LinaCodec compression then decode.
+
+        This is the compatibility mode for Cloudflare Workers:
+        - Generate audio chunk (24kHz from VibeVoice)
+        - Encode to LinaCodec tokens (compression)
+        - Decode back to audio (quality upgrade to 48kHz)
+        - Yield decoded audio chunk as base64 PCM-16 or MP3
+
+        This gives us the quality benefits of LinaCodec (48kHz output) while
+        outputting standard PCM that doesn't require browser decoding.
+
+        Args:
+            text: Text to synthesize
+            speaker_name: Speaker name for voice cloning
+            cfg_scale: Classifier-free guidance scale
+            disable_prefill: Disable prefill optimization
+            max_chunk_chars: Maximum characters per chunk
+            output_format: 'pcm_16' or 'mp3'
+
+        Yields:
+            Dictionaries with streaming chunk data
+        """
+        # Determine target format
+        is_mp3 = output_format == "mp3"
+
+        if not LINACODEC_AVAILABLE:
+            # Fallback: stream raw audio without LinaCodec
+            log.warning("[Streaming] LinaCodec not available, streaming raw audio at 24kHz")
+
+            for chunk_num, chunk_wav in enumerate(self.generate_stream(
+                text=text,
+                speaker_name=speaker_name,
+                cfg_scale=cfg_scale,
+                disable_prefill=disable_prefill,
+                max_chunk_chars=max_chunk_chars,
+            ), 1):
+                # Convert to numpy
+                audio_array = chunk_wav.squeeze(0).cpu().numpy()
+
+                # Encode if MP3 requested
+                if is_mp3:
+                    audio_bytes = self.encode_mp3(audio_array, 24000)
+                    fmt = "mp3"
+                else:
+                    audio_array = np.clip(audio_array, -1.0, 1.0)
+                    audio_int16 = (audio_array * 32767.0).astype(np.int16)
+                    audio_bytes = audio_int16.tobytes()
+                    fmt = "pcm_16"
+
+                audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+                yield {
+                    'status': 'streaming',
+                    'chunk': chunk_num,
+                    'format': fmt,
+                    'audio_chunk': audio_b64,
+                    'sample_rate': 24000
+                }
+
+            # Small delay to ensure all chunks are in RunPod's stream array before completion signal
+            time.sleep(0.3)
+
+            yield {
+                'status': 'complete',
+                'format': fmt,
+                'message': 'All chunks streamed (no LinaCodec)'
+            }
+            return
+
+        # LinaCodec is available - use encode/decode pattern for 48kHz output
+        lina = load_linacodec()
+        start_time = time.time()
+
+        for chunk_num, chunk_wav in enumerate(self.generate_stream(
+            text=text,
+            speaker_name=speaker_name,
+            cfg_scale=cfg_scale,
+            disable_prefill=disable_prefill,
+            max_chunk_chars=max_chunk_chars,
+        ), 1):
+            chunk_start = time.time()
+
+            # Encode to LinaCodec tokens
+            tokens, embedding = encode_to_linacodec(chunk_wav)
+
+            # Decode back to audio (now at 48kHz!)
+            decoded_audio = lina.decode(tokens, embedding)
+
+            process_time = time.time() - chunk_start
+
+            # Convert to base64 for transmission
+            audio_array = decoded_audio.cpu().numpy() if hasattr(decoded_audio, 'cpu') else decoded_audio
+
+            log.info(f"[Streaming] Chunk {chunk_num} decoded: shape={audio_array.shape}, dtype={audio_array.dtype}")
+
+            # Ensure 1D array (squeeze if needed)
+            if audio_array.ndim > 1:
+                audio_array = audio_array.squeeze()
+
+            # Convert float32 to int16 PCM
+            audio_int16 = (audio_array * 32767).astype(np.int16)
+
+            if is_mp3:
+                # Encode to MP3 @ 48kHz
+                audio_bytes = self.encode_mp3(audio_int16, 48000)
+                fmt = "mp3"
+            else:
+                audio_bytes = audio_int16.tobytes()
+                fmt = "pcm_16"
+
+            audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+
+            log.debug(f"[Streaming] Chunk {chunk_num}: {len(audio_array)} samples (process: {process_time:.3f}s)")
+
+            yield {
+                'status': 'streaming',
+                'chunk': chunk_num,
+                'format': fmt,
+                'audio_chunk': audio_b64,
+                'sample_rate': 48000,
+                'process_time_ms': process_time * 1000
+            }
+
+        elapsed = time.time() - start_time
+        log.info(f"[Streaming] Complete: {chunk_num} chunks, {elapsed:.2f}s")
+
+        # Small delay to ensure all chunks are in RunPod's stream array before completion signal
+        time.sleep(0.3)
+
+        yield {
+            'status': 'complete',
+            'format': fmt,
+            'message': 'All chunks streamed',
+            'total_chunks': chunk_num,
+            'elapsed_time_seconds': elapsed
+        }

@@ -180,69 +180,51 @@ def upload_to_s3(audio_buffer, filename, content_type='application/octet-stream'
 
 def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_format, max_chunk_chars=None):
     """Generator for streaming audio chunks (pcm_16 or mp3)."""
-    src_rate = config.DEFAULT_SAMPLE_RATE # 24000
-    dst_rate = 48000 # Upsample to 48kHz to match client expectations
     session_id = str(uuid.uuid4())
 
     try:
-        chunk_num = 0
         log.info(
-            f"[Streaming] output_format={output_format}, src_rate={src_rate}, dst_rate={dst_rate}, max_chunk_chars={max_chunk_chars}"
+            f"[Streaming] output_format={output_format}, max_chunk_chars={max_chunk_chars}"
         )
 
-        for wav_chunk in inference_engine.generate_stream(
+        # Use the new generate_audio_stream_decoded method with LinaCodec
+        for response_item in inference_engine.generate_audio_stream_decoded(
             text=text,
             speaker_name=speaker_name,
             cfg_scale=cfg_scale,
             disable_prefill=disable_prefill,
             max_chunk_chars=max_chunk_chars,
+            output_format=output_format,
         ):
-            chunk_num += 1
-            audio = to_numpy_audio(wav_chunk)
-            
-            # Prepare audio data
-            if output_format == "mp3":
-                audio_bytes = encode_mp3_bytes(audio, src_rate, dst_rate)
-                extension = "mp3"
-                content_type = "audio/mpeg"
-            else:
-                # PCM: Must resample explicitly to 48kHz
-                audio = np.clip(audio, -1.0, 1.0)
-                pcm16 = (audio * 32767.0).astype(np.int16)
-                raw_bytes = pcm16.tobytes()
-                
-                audio_bytes = resample_pcm_bytes(raw_bytes, src_rate, dst_rate)
-                extension = "pcm"
-                content_type = "application/octet-stream"
+            # Handle S3 upload for large payloads
+            if response_item.get('status') == 'streaming' and 'audio_chunk' in response_item:
+                audio_bytes = base64.b64decode(response_item['audio_chunk'])
 
-            # Upload to S3 to bypass RunPod payload limits
-            chunk_filename = f"stream_{session_id}_{chunk_num}.{extension}"
-            audio_buffer = io.BytesIO(audio_bytes)
-            
-            s3_url = upload_to_s3(audio_buffer, chunk_filename, content_type=content_type)
-            
-            response_item = {
-                "status": "streaming",
-                "chunk": chunk_num,
-                "format": output_format,
-                "sample_rate": dst_rate,
-            }
+                # Determine content type
+                if response_item['format'] == 'mp3':
+                    content_type = 'audio/mpeg'
+                    extension = 'mp3'
+                else:
+                    content_type = 'application/octet-stream'
+                    extension = 'pcm'
 
-            if s3_url:
-                response_item["audio_url"] = s3_url
-            else:
-                # Fallback to base64 if S3 upload fails
-                response_item["audio_chunk"] = base64.b64encode(audio_bytes).decode("utf-8")
+                chunk_filename = f"stream_{session_id}_{response_item['chunk']}.{extension}"
+                audio_buffer = io.BytesIO(audio_bytes)
+
+                s3_url = upload_to_s3(audio_buffer, chunk_filename, content_type=content_type)
+
+                if s3_url:
+                    response_item["audio_url"] = s3_url
+                    del response_item["audio_chunk"]  # Remove base64 to save space
 
             yield response_item
 
-        yield {
-            "status": "complete",
-            "format": output_format,
-            "message": "All chunks streamed",
-        }
     except Exception as e:
         log.error(f"Streaming failed: {e}")
+        yield {
+            "status": "error",
+            "error": str(e)
+        }
 
 def _extract_and_validate_params(job_input):
     """Extract and validate parameters from job input."""
@@ -419,4 +401,7 @@ def handler(job):
     yield result
 
 if __name__ == "__main__":
-    runpod.serverless.start({"handler": handler})
+    runpod.serverless.start({
+        "handler": handler,
+        "return_aggregate_stream": True  # CRITICAL: Enables /runsync to capture generator yields
+    })

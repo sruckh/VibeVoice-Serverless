@@ -19,6 +19,8 @@ IMPLEMENTATION-ORDER.md
 LINACODEC-BE.md
 LINACODEC-FE.md
 LINACODEC-MW.md
+LINACODEC-VIBEVOICE.md
+REFACTOR_SUMMARY.md
 
 # Cloudflare Worker configuration (contains deployment-specific URLs/mappings)
 bridge/wrangler.toml
@@ -28,3 +30,5 @@ bridge/.wrangler/
 node_modules/
 bridge/node_modules/
 voices.json
+
+tmp/

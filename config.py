@@ -3,7 +3,9 @@ import os
 # Environment Variables
 HF_TOKEN = os.environ.get("HF_TOKEN")  # Required for model access
 
-# HuggingFace cache configuration (use default unless explicitly set)
+# HuggingFace cache configuration
+# NOTE: We do NOT override HF_HOME/HF_HUB_CACHE to allow RunPod's smart caching to work.
+# RunPod automatically mounts cached models when using default HF paths.
 HF_HOME = os.environ.get("HF_HOME")
 HF_HUB_CACHE = os.environ.get("HF_HUB_CACHE")
 if HF_HOME:

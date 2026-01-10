@@ -5,10 +5,14 @@ echo "=== VibeVoice Runpod Serverless Bootstrap ==="
 
 # Create vibevoice directory structure on network volume
 echo "Creating directory structure on network volume..."
-mkdir -p /runpod-volume/vibevoice/{models,output,demo/voices,torch_cache}
+mkdir -p /runpod-volume/vibevoice/{models,output,demo/voices,torch_cache,hf_home,hf_cache}
 
 # Set environment variables for Torch cache
 export TORCH_HOME="/runpod-volume/vibevoice/torch_cache"
+
+# NOTE: We do NOT set HF_HOME or HF_HUB_CACHE here to allow RunPod's smart caching to work.
+# RunPod automatically mounts cached HuggingFace models when using default paths.
+# This significantly speeds up cold starts for LinaCodec and other HF models.
 
 # Export HF_TOKEN if available
 if [ -n "$HF_TOKEN" ]; then
