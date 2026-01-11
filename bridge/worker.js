@@ -516,7 +516,7 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
   let nextExpectedChunk = 1;
   const chunkBuffer = new Map(); // id -> uint8array
 
-  let pollInterval = 500;
+  let pollInterval = 100; // Start at 100ms for faster first chunk
   let isFinished = false;
   const startTime = Date.now();
   const timeoutMs = 300000;
@@ -596,7 +596,7 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
       nextExpectedChunk++;
       
       // Reset poll interval on activity
-      pollInterval = 500;
+      pollInterval = 100; // Fast polling while chunks are arriving
     }
 
     // Adaptive polling: slow down if no new data
@@ -612,7 +612,7 @@ async function pollRunpodStream({ runpodUrls, apiKey, jobId, writer, requestId }
         if (!completedAt) {
           console.log(`[Tier 2][CF][${requestId}] RunPod status is COMPLETED, waiting for stream drain...`);
           completedAt = Date.now();
-          pollInterval = 200; // Poll faster to finish up
+          pollInterval = 50; // Poll very fast to drain remaining chunks
         } else if ((Date.now() - completedAt) > DRAIN_TIMEOUT_MS) {
             console.warn(`[Tier 2][CF][${requestId}] Timed out waiting for stream drain`);
             isFinished = true;
