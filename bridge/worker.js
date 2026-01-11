@@ -333,7 +333,7 @@ async function forwardRunPodStream({ runpodUrls, apiKey, text, speakerName, serv
           speaker_name: speakerName,
           service,
           stream: true,
-          output_format: 'pcm_16' // Revert to PCM for streaming clients that expect raw samples
+          output_format: 'mp3' // Use MP3 to stay under RunPod's ~1-2MB stream payload limit
         }
       })
     });

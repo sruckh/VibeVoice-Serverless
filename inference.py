@@ -681,9 +681,6 @@ class VibeVoiceInference:
                     'sample_rate': 24000
                 }
 
-            # Small delay to ensure all chunks are in RunPod's stream array before completion signal
-            time.sleep(0.3)
-
             yield {
                 'status': 'complete',
                 'format': fmt,
@@ -747,9 +744,6 @@ class VibeVoiceInference:
 
         elapsed = time.time() - start_time
         log.info(f"[Streaming] Complete: {chunk_num} chunks, {elapsed:.2f}s")
-
-        # Small delay to ensure all chunks are in RunPod's stream array before completion signal
-        time.sleep(0.3)
 
         yield {
             'status': 'complete',
