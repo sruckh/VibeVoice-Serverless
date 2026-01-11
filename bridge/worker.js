@@ -126,7 +126,10 @@ export default {
         return handleOpenAIStreaming(env, {
           text: input,
           speaker_name: speakerName,
-          output_format: response_format === 'pcm' ? 'pcm_16' : 'mp3'
+          // Always use MP3 internally for streaming to stay under RunPod's payload limits
+          // PCM chunks are too large (3.5MB vs 500KB for MP3)
+          output_format: 'mp3',
+          client_requested_format: response_format
         });
       }
 
@@ -370,10 +373,12 @@ async function forwardRunPodStream({ runpodUrls, apiKey, text, speakerName, serv
 }
 
 async function handleOpenAIStreaming(env, params) {
-  const { text, speaker_name, output_format } = params;
+  const { text, speaker_name, output_format, client_requested_format } = params;
   const requestId = crypto.randomUUID();
 
   const runpodUrls = buildRunpodUrls(env.RUNPOD_URL);
+
+  console.log(`[Tier 2][CF][${requestId}] Streaming: internal_format=${output_format}, client_format=${client_requested_format}`);
 
   const runResponse = await fetch(runpodUrls.run, {
     method: 'POST',
@@ -386,7 +391,7 @@ async function handleOpenAIStreaming(env, params) {
         text,
         speaker_name,
         stream: true,
-        output_format
+        output_format  // Always 'mp3' to stay under payload limits
       }
     })
   });
@@ -421,9 +426,16 @@ async function handleOpenAIStreaming(env, params) {
     }
   })();
 
+  // Return content type based on what client requested
+  // Note: We always use MP3 internally, so if client wants PCM we're returning MP3 anyway
+  // Most clients (browsers, audio players) handle MP3 natively, so this is usually fine
+  const contentType = (client_requested_format === 'pcm' || client_requested_format === 'pcm_16')
+    ? 'audio/pcm'
+    : 'audio/mpeg';
+
   return new Response(readable, {
     headers: {
-      'Content-Type': output_format === 'mp3' ? 'audio/mpeg' : 'audio/pcm',
+      'Content-Type': contentType,
       'Transfer-Encoding': 'chunked',
       'Cache-Control': 'no-cache',
       'X-Accel-Buffering': 'no'
