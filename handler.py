@@ -179,14 +179,17 @@ def upload_to_s3(audio_buffer, filename, content_type='application/octet-stream'
         return None
 
 def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_format, max_chunk_chars=None):
-    """Generator for streaming audio chunks (pcm_16 or mp3)."""
+    """Generator for streaming audio chunks (pcm_16 or mp3).
+    
+    Sends base64 chunks directly for true streaming (no S3 upload).
+    """
     session_id = str(uuid.uuid4())
+    
+    log.info(f"[Streaming][{session_id}] Starting stream: output_format={output_format}, max_chunk_chars={max_chunk_chars}")
 
     try:
-        log.info(
-            f"[Streaming] output_format={output_format}, max_chunk_chars={max_chunk_chars}"
-        )
-
+        chunk_count = 0
+        
         # Use the new generate_audio_stream_decoded method with LinaCodec
         for response_item in inference_engine.generate_audio_stream_decoded(
             text=text,
@@ -196,31 +199,19 @@ def stream_audio_chunks(text, speaker_name, cfg_scale, disable_prefill, output_f
             max_chunk_chars=max_chunk_chars,
             output_format=output_format,
         ):
-            # Handle S3 upload for large payloads
-            if response_item.get('status') == 'streaming' and 'audio_chunk' in response_item:
-                audio_bytes = base64.b64decode(response_item['audio_chunk'])
-
-                # Determine content type
-                if response_item['format'] == 'mp3':
-                    content_type = 'audio/mpeg'
-                    extension = 'mp3'
-                else:
-                    content_type = 'application/octet-stream'
-                    extension = 'pcm'
-
-                chunk_filename = f"stream_{session_id}_{response_item['chunk']}.{extension}"
-                audio_buffer = io.BytesIO(audio_bytes)
-
-                s3_url = upload_to_s3(audio_buffer, chunk_filename, content_type=content_type)
-
-                if s3_url:
-                    response_item["audio_url"] = s3_url
-                    del response_item["audio_chunk"]  # Remove base64 to save space
-
+            # For streaming mode: Send base64 directly (no S3 upload)
+            # This enables true streaming with minimal latency
+            if response_item.get('status') == 'streaming':
+                chunk_count += 1
+                log.info(f"[Streaming][{session_id}] Yielding chunk {chunk_count} (format={response_item.get('format')}, size={len(response_item.get('audio_chunk', ''))} bytes base64)")
+            elif response_item.get('status') == 'complete':
+                log.info(f"[Streaming][{session_id}] Stream complete: {chunk_count} total chunks")
+            
+            # Yield chunk immediately without S3 upload
             yield response_item
 
     except Exception as e:
-        log.error(f"Streaming failed: {e}")
+        log.error(f"[Streaming][{session_id}] Streaming failed: {e}")
         yield {
             "status": "error",
             "error": str(e)
@@ -256,10 +247,13 @@ def _extract_and_validate_params(job_input):
         "disable_prefill": disable_prefill,
     }, None
 
-def handler_stream(job_input, output_format):
+def handler_stream(job_input, output_format, request_id):
     """Streaming mode handler - yields audio chunks as they're generated."""
+    log.info(f"[Handler][{request_id}] handler_stream called")
+    
     params, error = _extract_and_validate_params(job_input)
     if error:
+        log.error(f"[Handler][{request_id}] Validation error: {error}")
         yield error
         return
 
@@ -267,10 +261,9 @@ def handler_stream(job_input, output_format):
         yield {"error": f"Unknown output_format: {output_format}"}
         return
 
-    # S3 Streaming enabled: 300 chars provides a responsive streaming feel
-    # while staying perfectly stable.
+    # Use 300 chars for responsive streaming feel
     max_chunk_chars = 300
-    log.info(f"Using forced max_chunk_chars={max_chunk_chars} for responsive streaming (S3 backed)")
+    log.info(f"[Handler][{request_id}] max_chunk_chars={max_chunk_chars} for base64 streaming (no S3)")
 
     yield from stream_audio_chunks(
         text=params["text"],
@@ -383,6 +376,9 @@ def handler_batch(job, output_format):
 
 def handler(job):
     """Runpod serverless handler (streaming + batch)."""
+    # Generate unique request ID to track double calls
+    request_id = str(uuid.uuid4())[:8]
+    
     job_input = job.get("input", {})
     stream = bool(job_input.get("stream", False))
     output_format = job_input.get("output_format")
@@ -392,12 +388,15 @@ def handler(job):
     if not stream and not output_format:
         output_format = "mp3"
 
+    log.info(f"[Handler][{request_id}] {'STREAM' if stream else 'BATCH'} mode requested: format={output_format}")
+
     if stream:
-        log.info(f"[Handler] Streaming mode requested: format={output_format}")
-        yield from handler_stream(job_input, output_format)
+        yield from handler_stream(job_input, output_format, request_id)
+        log.info(f"[Handler][{request_id}] Stream handler complete")
         return
 
     result = handler_batch(job, output_format)
+    log.info(f"[Handler][{request_id}] Batch handler complete")
     yield result
 
 if __name__ == "__main__":
