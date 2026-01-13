@@ -126,9 +126,8 @@ export default {
         return handleOpenAIStreaming(env, {
           text: input,
           speaker_name: speakerName,
-          // Always use MP3 internally for streaming to stay under RunPod's payload limits
-          // PCM chunks are too large (3.5MB vs 500KB for MP3)
-          output_format: 'mp3',
+          // Use PCM-16 like chatterbox for frontend compatibility
+          output_format: 'pcm_16',
           client_requested_format: response_format
         });
       }
@@ -268,7 +267,7 @@ async function handleBatchViaStreaming({ runpodUrls, apiKey, text, speakerName, 
         text,
         speaker_name: speakerName,
         stream: true, // Always stream from RunPod to avoid payload limits
-        output_format: 'mp3' // Force MP3 internally to save bandwidth/limits
+        output_format: 'pcm_16' // Use PCM-16 like chatterbox for frontend compatibility
       }
     })
   });
@@ -336,7 +335,7 @@ async function forwardRunPodStream({ runpodUrls, apiKey, text, speakerName, serv
           speaker_name: speakerName,
           service,
           stream: true,
-          output_format: 'mp3' // Use MP3 to stay under RunPod's ~1-2MB stream payload limit
+          output_format: 'pcm_16' // Use PCM-16 like chatterbox for frontend compatibility
         }
       })
     });
@@ -391,7 +390,7 @@ async function handleOpenAIStreaming(env, params) {
         text,
         speaker_name,
         stream: true,
-        output_format  // Always 'mp3' to stay under payload limits
+        output_format  // 'pcm_16' for chatterbox compatibility
       }
     })
   });
