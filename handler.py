@@ -277,7 +277,7 @@ def handler_stream(job_input, output_format, request_id):
     )
 
 def handler_batch(job, output_format):
-    """Batch mode handler - generates complete audio and returns URL/base64"""
+    """Batch mode handler - generates complete audio and returns S3 URL (like chatterbox)"""
     # Clean up old output files (older than 2 days)
     cleanup_old_files(config.OUTPUT_DIR, days=2)
 
@@ -287,7 +287,8 @@ def handler_batch(job, output_format):
         return error
 
     # Use larger chunks for batch mode to preserve quality
-    max_chunk_chars = 1000
+    # This is internal chunking only - final output is single complete file
+    max_chunk_chars = 300
 
     try:
         wav = inference_engine.generate(
@@ -307,6 +308,7 @@ def handler_batch(job, output_format):
 
         wav = to_numpy_audio(wav)
 
+        # Loudness normalization
         if output_format != "linacodec_tokens":
             try:
                 import pyloudnorm as pyln
@@ -323,28 +325,33 @@ def handler_batch(job, output_format):
             except Exception as e:
                 log.warning(f"Loudness normalization failed: {e}, using unnormalized audio")
 
-        if output_format == "pcm_16":
-            # PCM: Must resample explicitly to 48kHz
-            wav = np.clip(wav, -1.0, 1.0)
-            pcm16 = (wav * 32767.0).astype(np.int16)
-            resampled_bytes = resample_pcm_bytes(pcm16.tobytes(), src_rate, dst_rate)
-            
-            return {
-                "status": "success",
-                "format": "pcm_16",
-                "sample_rate": dst_rate,
-                "duration_sec": len(wav) / src_rate,
-                "audio_base64": base64.b64encode(resampled_bytes).decode("utf-8"),
-            }
-
-        # MP3 handling
+        # Prepare audio buffer and filename based on format
         audio_buffer = io.BytesIO()
-        mp3_bytes = encode_mp3_bytes(wav, src_rate, dst_rate)
-        audio_buffer.write(mp3_bytes)
-        audio_buffer.seek(0)
+        
+        if output_format == "pcm_16":
+            # Save as WAV file for PCM (with headers so it's playable)
+            import soundfile as sf
+            wav_clipped = np.clip(wav, -1.0, 1.0)
+            # Resample to 48kHz
+            import librosa
+            wav_resampled = librosa.resample(wav_clipped, orig_sr=src_rate, target_sr=dst_rate)
+            
+            # Write WAV to buffer
+            sf.write(audio_buffer, wav_resampled, dst_rate, format='WAV', subtype='PCM_16')
+            audio_buffer.seek(0)
+            
+            filename = f"{params['session_id']}_{uuid.uuid4()}.wav"
+            content_type = 'audio/wav'
+            
+        else:  # MP3
+            mp3_bytes = encode_mp3_bytes(wav, src_rate, dst_rate)
+            audio_buffer.write(mp3_bytes)
+            audio_buffer.seek(0)
+            
+            filename = f"{params['session_id']}_{uuid.uuid4()}.mp3"
+            content_type = 'audio/mpeg'
 
-        filename = f"{params['session_id']}_{uuid.uuid4()}.mp3"
-
+        # Save locally
         output_path = os.path.join(config.OUTPUT_DIR, filename)
         os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
@@ -354,27 +361,37 @@ def handler_batch(job, output_format):
 
         audio_buffer.seek(0)
 
+        # Upload to S3 (like chatterbox does)
         log.info("Uploading to S3 (if configured)...")
-        s3_url = upload_to_s3(audio_buffer, filename)
+        s3_url = upload_to_s3(audio_buffer, filename, content_type=content_type)
 
+        duration_sec = len(wav) / src_rate
+        
         response = {
             "status": "success",
+            "format": output_format,
             "sample_rate": dst_rate,
-            "duration_sec": len(wav) / src_rate,
+            "duration_sec": duration_sec,
         }
 
         if s3_url:
             response["audio_url"] = s3_url
+            log.info(f"Batch audio uploaded to S3: {s3_url}")
         else:
+            # Fallback to base64 if S3 not configured
             audio_buffer.seek(0)
             b64_audio = base64.b64encode(audio_buffer.read()).decode("utf-8")
             response["audio_base64"] = b64_audio
+            log.warning("S3 not configured, returning base64 (may be large)")
 
         log.info("Handler completed successfully.")
         return response
 
     except Exception as e:
         log.error(f"Inference failed: {e}")
+        import traceback
+        log.error(traceback.format_exc())
+        return {"error": str(e)}
 
 def handler(job):
     """Runpod serverless handler (streaming + batch)."""
