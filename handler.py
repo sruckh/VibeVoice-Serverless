@@ -261,10 +261,10 @@ def handler_stream(job_input, output_format, request_id):
         yield {"error": f"Unknown output_format: {output_format}"}
         return
 
-    # Use 300 chars for good balance: responsive streaming + reasonable chunk count
-    # With MP3 encoding: 300 chars → ~28s → ~500KB (well under RunPod's 1-2MB limit)
-    # With PCM-16: 300 chars → ~28s → 3.5MB (exceeds limit - hence MP3 for streaming)
-    max_chunk_chars = 300
+    # Use 150 chars to keep PCM-16 chunks under RunPod's ~1-2MB payload limit
+    # 150 chars → ~10s audio @ 48kHz → ~960KB PCM-16 → ~1.3MB base64 ✅
+    # Smaller chunks = more chunks, but faster TTFB and no 400 errors
+    max_chunk_chars = 150
     log.info(f"[Handler][{request_id}] max_chunk_chars={max_chunk_chars} for streaming")
 
     yield from stream_audio_chunks(
