@@ -139,11 +139,10 @@ export default {
         return openaiError('RunPod API key not configured', 'server_error', null);
       }
 
-      // BATCH MODE: Use streaming logic + accumulation to avoid RunPod payload limits
-      // We force 'stream=true' in the RunPod request, even though this is a batch OpenAI request
+      // BATCH MODE: Use /runsync like chatterbox - backend uploads to S3
       const runpodUrls = buildRunpodUrls(env.RUNPOD_URL);
-      
-      const audioBytes = await handleBatchViaStreaming({
+
+      const audioBytes = await handleBatchMode({
         runpodUrls,
         apiKey: env.RUNPOD_API_KEY,
         text: input,
@@ -155,7 +154,7 @@ export default {
       return new Response(audioBytes, {
         status: 200,
         headers: {
-          'Content-Type': response_format === 'pcm' ? 'audio/pcm' : 'audio/mpeg',
+          'Content-Type': response_format === 'pcm' ? 'audio/wav' : 'audio/mpeg',
           'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'no-cache'
         }
@@ -249,14 +248,15 @@ async function handleStreamingTTS(request, env, ctx) {
 }
 
 /**
- * Execute a batch request by streaming and accumulating chunks
+ * Execute a true batch request using /runsync (like chatterbox)
+ * Backend generates complete audio, uploads to S3, returns presigned URL
  */
-async function handleBatchViaStreaming({ runpodUrls, apiKey, text, speakerName, outputFormat }) {
+async function handleBatchMode({ runpodUrls, apiKey, text, speakerName, outputFormat }) {
   const requestId = crypto.randomUUID();
-  console.log(`[Tier 2][CF][${requestId}] Starting batch-via-streaming for ${text.length} chars`);
+  console.log(`[Tier 2][CF][${requestId}] Starting batch mode for ${text.length} chars, format=${outputFormat}`);
 
-  // Submit job
-  const runpodResponse = await fetch(runpodUrls.run, {
+  // Use /runsync for synchronous batch processing
+  const runpodResponse = await fetch(runpodUrls.runsync, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -266,53 +266,56 @@ async function handleBatchViaStreaming({ runpodUrls, apiKey, text, speakerName, 
       input: {
         text,
         speaker_name: speakerName,
-        stream: true, // Always stream from RunPod to avoid payload limits
-        output_format: 'pcm_16' // Use PCM-16 like chatterbox for frontend compatibility
+        stream: false,  // Batch mode - no streaming
+        output_format: outputFormat
       }
     })
   });
 
   if (!runpodResponse.ok) {
     const errorText = await runpodResponse.text();
-    throw new Error(`RunPod submit failed: ${runpodResponse.status} - ${errorText}`);
+    throw new Error(`RunPod batch request failed: ${runpodResponse.status} - ${errorText}`);
   }
 
-  const jobData = await runpodResponse.json();
-  const jobId = extractRunpodJobId(jobData);
-  if (!jobId) {
-    throw new Error(`RunPod did not return a job id: ${JSON.stringify(jobData)}`);
+  const result = await runpodResponse.json();
+
+  // Check for errors
+  if (result.status === 'FAILED' || result.error) {
+    throw new Error(`RunPod batch job failed: ${result.error || 'Unknown error'}`);
   }
 
-  // Accumulator
-  const chunks = [];
-  const writer = {
-    write(chunk) {
-      chunks.push(chunk);
-      return Promise.resolve();
-    },
-    close() { return Promise.resolve(); }
-  };
+  // Extract output from RunPod response
+  const output = result.output || result;
 
-  // Poll and accumulate
-  await pollRunpodStream({
-    runpodUrls,
-    apiKey,
-    jobId,
-    writer,
-    requestId
-  });
+  // Check if we got an S3 URL (preferred)
+  if (output.audio_url) {
+    console.log(`[Tier 2][CF][${requestId}] Fetching audio from S3: ${output.audio_url}`);
 
-  // Concatenate chunks
-  const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
+    const s3Response = await fetch(output.audio_url);
+    if (!s3Response.ok) {
+      throw new Error(`Failed to fetch audio from S3: ${s3Response.status}`);
+    }
+
+    const audioBytes = await s3Response.arrayBuffer();
+    console.log(`[Tier 2][CF][${requestId}] Batch complete: ${audioBytes.byteLength} bytes from S3`);
+    return audioBytes;
   }
 
-  console.log(`[Tier 2][CF][${requestId}] Batch complete: ${totalLength} bytes assembled`);
-  return result.buffer;
+  // Fallback: base64 audio (if S3 not configured)
+  if (output.audio_base64) {
+    console.log(`[Tier 2][CF][${requestId}] Using base64 audio (S3 not configured)`);
+
+    const binaryString = atob(output.audio_base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    console.log(`[Tier 2][CF][${requestId}] Batch complete: ${bytes.length} bytes from base64`);
+    return bytes.buffer;
+  }
+
+  throw new Error('RunPod response missing both audio_url and audio_base64');
 }
 
 /**
