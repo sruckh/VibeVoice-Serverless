@@ -492,6 +492,9 @@ class VibeVoiceInference:
                 if chunk_wav.speech_outputs and chunk_wav.speech_outputs[0] is not None:
                     wav_data = chunk_wav.speech_outputs[0]
                     if torch.is_tensor(wav_data):
+                        # Convert BFloat16 to Float32 before numpy (BFloat16 not supported by numpy)
+                        if wav_data.dtype == torch.bfloat16:
+                            wav_data = wav_data.float()
                         wav_data = wav_data.cpu().numpy().squeeze()
                     combined_wav.append(wav_data)
                     
@@ -658,8 +661,11 @@ class VibeVoiceInference:
                 disable_prefill=disable_prefill,
                 max_chunk_chars=max_chunk_chars,
             ), 1):
-                # Convert to numpy
-                audio_array = chunk_wav.squeeze(0).cpu().numpy()
+                # Convert to numpy (handle BFloat16)
+                chunk_tensor = chunk_wav.squeeze(0)
+                if chunk_tensor.dtype == torch.bfloat16:
+                    chunk_tensor = chunk_tensor.float()
+                audio_array = chunk_tensor.cpu().numpy()
 
                 # Encode if MP3 requested
                 if is_mp3:
