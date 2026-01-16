@@ -126,9 +126,8 @@ export default {
         return handleOpenAIStreaming(env, {
           text: input,
           speaker_name: speakerName,
-          // Use PCM-16 like chatterbox for frontend compatibility
-          output_format: 'pcm_16',
-          client_requested_format: response_format
+          // Always use MP3 for streaming - stays under RunPod's ~1-2MB payload limit
+          output_format: 'mp3'
         });
       }
 
@@ -147,14 +146,14 @@ export default {
         apiKey: env.RUNPOD_API_KEY,
         text: input,
         speakerName,
-        outputFormat: response_format === 'pcm' ? 'pcm_16' : 'mp3'
+        outputFormat: 'mp3'  // Always MP3 for consistent client contract
       });
 
-      // Return raw audio bytes (OpenAI format)
+      // Return raw MP3 bytes
       return new Response(audioBytes, {
         status: 200,
         headers: {
-          'Content-Type': response_format === 'pcm' ? 'audio/wav' : 'audio/mpeg',
+          'Content-Type': 'audio/mpeg',
           'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'no-cache'
         }
@@ -228,10 +227,10 @@ async function handleStreamingTTS(request, env, ctx) {
       startTime
     }));
 
-    // Return streaming response immediately
+    // Return streaming response immediately with MP3 content type
     return new Response(readable, {
       headers: {
-        'Content-Type': 'audio/octet-stream',
+        'Content-Type': 'audio/mpeg',
         'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no',
@@ -338,7 +337,7 @@ async function forwardRunPodStream({ runpodUrls, apiKey, text, speakerName, serv
           speaker_name: speakerName,
           service,
           stream: true,
-          output_format: 'pcm_16' // Use PCM-16 like chatterbox for frontend compatibility
+          output_format: 'mp3' // Always MP3 for streaming - stays under RunPod's ~1-2MB payload limit
         }
       })
     });
@@ -375,12 +374,12 @@ async function forwardRunPodStream({ runpodUrls, apiKey, text, speakerName, serv
 }
 
 async function handleOpenAIStreaming(env, params) {
-  const { text, speaker_name, output_format, client_requested_format } = params;
+  const { text, speaker_name, output_format } = params;
   const requestId = crypto.randomUUID();
 
   const runpodUrls = buildRunpodUrls(env.RUNPOD_URL);
 
-  console.log(`[Tier 2][CF][${requestId}] Streaming: internal_format=${output_format}, client_format=${client_requested_format}`);
+  console.log(`[Tier 2][CF][${requestId}] Streaming: format=${output_format}`);
 
   const runResponse = await fetch(runpodUrls.run, {
     method: 'POST',
@@ -393,7 +392,7 @@ async function handleOpenAIStreaming(env, params) {
         text,
         speaker_name,
         stream: true,
-        output_format  // 'pcm_16' for chatterbox compatibility
+        output_format  // 'mp3' - stays under RunPod's payload limits
       }
     })
   });
@@ -428,16 +427,10 @@ async function handleOpenAIStreaming(env, params) {
     }
   })();
 
-  // Return content type based on what client requested
-  // Note: We always use MP3 internally, so if client wants PCM we're returning MP3 anyway
-  // Most clients (browsers, audio players) handle MP3 natively, so this is usually fine
-  const contentType = (client_requested_format === 'pcm' || client_requested_format === 'pcm_16')
-    ? 'audio/pcm'
-    : 'audio/mpeg';
-
+  // Always return audio/mpeg - we use MP3 internally for streaming
   return new Response(readable, {
     headers: {
-      'Content-Type': contentType,
+      'Content-Type': 'audio/mpeg',
       'Transfer-Encoding': 'chunked',
       'Cache-Control': 'no-cache',
       'X-Accel-Buffering': 'no'
