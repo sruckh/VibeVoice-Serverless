@@ -695,6 +695,10 @@ class VibeVoiceInference:
             return
 
         # LinaCodec is available - use encode/decode pattern for 48kHz output
+        # IMPORTANT: Load VibeVoice FIRST to claim GPU memory before LinaCodec
+        if self.model is None:
+            self.load_model()
+
         lina = load_linacodec()
         start_time = time.time()
 

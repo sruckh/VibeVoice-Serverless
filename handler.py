@@ -261,10 +261,10 @@ def handler_stream(job_input, output_format, request_id):
         yield {"error": f"Unknown output_format: {output_format}"}
         return
 
-    # Use config value for chunk size - with MP3 compression, 400 chars is safe
-    # 400 chars → ~27s audio @ 48kHz → ~500KB MP3 @ 192kbps ✅
-    # Larger chunks = better prosody, fewer API calls, stays under RunPod's ~1-2MB limit
-    max_chunk_chars = config.MAX_CHUNK_CHARS
+    # Use 250 chars for streaming - balances prosody quality with progressive playback
+    # 250 chars → ~17s audio → ~250KB MP3 → reasonable time-to-first-byte
+    # Smaller chunks = faster TTFB but worse prosody; 250 is minimum for good quality
+    max_chunk_chars = 250
     log.info(f"[Handler][{request_id}] max_chunk_chars={max_chunk_chars} for streaming (format={output_format})")
 
     yield from stream_audio_chunks(

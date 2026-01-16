@@ -284,7 +284,18 @@ async function handleBatchMode({ runpodUrls, apiKey, text, speakerName, outputFo
   }
 
   // Extract output from RunPod response
-  const output = result.output || result;
+  // Handler uses yield (generator), so output may be in 'stream' array or 'output' field
+  let output = result.output;
+  if (!output && result.stream && result.stream.length > 0) {
+    // Generator-based handler wraps output in stream array
+    const streamItem = result.stream[0];
+    output = streamItem.output || streamItem;
+  }
+  if (!output) {
+    output = result;
+  }
+
+  console.log(`[Tier 2][CF][${requestId}] RunPod response keys: ${Object.keys(result).join(', ')}`);
 
   // Check if we got an S3 URL (preferred)
   if (output.audio_url) {
