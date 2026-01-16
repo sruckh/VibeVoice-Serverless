@@ -397,9 +397,15 @@ def handler(job):
     """Runpod serverless handler (streaming + batch)."""
     # Generate unique request ID to track double calls
     request_id = str(uuid.uuid4())[:8]
-    
+
     job_input = job.get("input", {})
-    stream = bool(job_input.get("stream", False))
+
+    # Robust stream parameter parsing - handle bool, string, int
+    stream_value = job_input.get("stream", False)
+    stream = stream_value is True or str(stream_value).lower() == "true"
+
+    log.info(f"[Handler][{request_id}] stream_value={stream_value!r} (type={type(stream_value).__name__}) -> stream={stream}")
+
     output_format = job_input.get("output_format")
 
     if stream and not output_format:
